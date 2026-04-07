@@ -131,28 +131,28 @@
   };
 
   // ── SCORING HELPERS ────────────────────────────────────────────────────────
-  function calcNetScore(roster, scores) {
-    // roster = [playerName, ...]
-    // scores[playerName] = {r1, r2, r3, r4, cut: bool}
+  function calcNetScore(roster, scoresObj) {
+    const tourneyStarted = Object.keys(scoresObj).length > 0;
     const playerScores = roster.map(name => {
-      const s = scores[name];
-      if (!s) return 0; // tournament hasn't started
-      const r1 = s.r1 ?? 72;
-      const r2 = s.r2 ?? 72;
+      const s = scoresObj[name];
+      if (!s || !tourneyStarted) return { name, total: 0, relative: 0, isCut: false, topar: 'E', thru: '' };
       const isCut = s.cut ?? false;
-      const r3 = isCut ? CONFIG.cutScore : (s.r3 ?? 72);
-      const r4 = isCut ? CONFIG.cutScore : (s.r4 ?? 72);
-      const total = r1 + r2 + r3 + r4;
-      return { name, total, relative: total - 288, isCut };
+      const r1 = s.r1 ?? null;
+      const r2 = s.r2 ?? null;
+      const r3 = isCut ? CONFIG.cutScore : (s.r3 ?? null);
+      const r4 = isCut ? CONFIG.cutScore : (s.r4 ?? null);
+      const rounds = [r1,r2,r3,r4].filter(r => r !== null);
+      const total = rounds.reduce((a,b) => a+b, 0);
+      const parPlayed = 72 * rounds.length;
+      const relative = rounds.length ? total - parPlayed : 0;
+      return { name, total, relative, isCut, topar: s.topar ?? relative, thru: s.thru ?? '' };
     });
-    // Sort by score, take top N
     const sorted = [...playerScores].sort((a,b) => a.relative - b.relative);
     const top = sorted.slice(0, CONFIG.topN);
     const netScore = top.reduce((s, p) => s + p.relative, 0);
-    return { netScore, playerScores, top5Names: top.map(p=>p.name) };
+    return { netScore, playerScores, top5Names: top.map(p=>p.name), tourneyStarted };
   }
 
-  // ── RENDER HELPERS ────────────────────────────────────────────────────────
   function fmtScore(n) {
     if (typeof n !== 'number') return '—';
     if (n === 0) return 'E';
@@ -160,17 +160,136 @@
   }
 
   // ── STATE ─────────────────────────────────────────────────────────────────
-  let scores   = {};   // {playerName: {r1,r2,r3,r4,cut}}
-  let rosters  = {};   // {key: {name, picks: [...]}}
+  let scores   = {};
+  let rosters  = {};
   let isAdmin  = false;
-  let currentView = 'leaderboard'; // leaderboard | submit | admin
+  let rostersHidden = false; // hide picks from public until locked
+  let espnFetchInterval = null;
+  let lastEspnFetch = 0;
 
-  // ── LIVE DATA ─────────────────────────────────────────────────────────────
+  // ── ESPN AUTO-SCORING ─────────────────────────────────────────────────────
+  // Name normalization: ESPN names → our field names
+  const ESPN_NAME_MAP = {
+    'Ludvig Åberg':   'Ludvig Aberg',
+    'Nicolai Højgaard':'Nicolai Hojgaard',
+    'Rasmus Højgaard': 'Rasmus Hojgaard',
+    'José María Olazábal':'Jose Maria Olazabal',
+    'Ángel Cabrera':  'Angel Cabrera',
+    'Hao-tong Li':    'Hao-Tong Li',
+    'Rasmus Neergaard Petersen':'Rasmus Neergaard-Petersen',
+  };
+
+  function normalizeEspnName(name) {
+    return ESPN_NAME_MAP[name] || name;
+  }
+
+  async function fetchEspnScores() {
+    // Only fetch once per 60s to be polite
+    if (Date.now() - lastEspnFetch < 55000) return;
+    lastEspnFetch = Date.now();
+
+    const CORS = 'https://corsproxy.io/?';
+    const ESPN_URL = 'https://site.api.espn.com/apis/site/v2/sports/golf/leaderboard?league=pga';
+
+    try {
+      const res  = await fetch(CORS + encodeURIComponent(ESPN_URL));
+      const data = await res.json();
+
+      // Find the Masters event
+      const events = data.events || [];
+      const mastersEvent = events.find(e =>
+        e.name?.toLowerCase().includes('master') ||
+        e.shortName?.toLowerCase().includes('master')
+      ) || events[0];
+
+      if (!mastersEvent) {
+        console.log('ESPN: Masters not found in events', events.map(e=>e.name));
+        updateEspnStatus('⚠️ Masters not live yet on ESPN');
+        return;
+      }
+
+      const competitors = mastersEvent.competitions?.[0]?.competitors || [];
+      if (!competitors.length) {
+        updateEspnStatus('⚠️ No competitors found');
+        return;
+      }
+
+      // Build scores object from ESPN data
+      const newScores = {};
+      competitors.forEach(c => {
+        const rawName = c.athlete?.displayName || '';
+        const name = normalizeEspnName(rawName);
+
+        // Check if this player is in our field
+        const inField = FIELD.some(f => f.name === name);
+        if (!inField) return;
+
+        const linescores = c.linescores || [];
+        const r1 = linescores[0]?.displayValue ? parseInt(linescores[0].value) + 72 : null;
+        const r2 = linescores[1]?.displayValue ? parseInt(linescores[1].value) + 72 : null;
+        const r3 = linescores[2]?.displayValue ? parseInt(linescores[2].value) + 72 : null;
+        const r4 = linescores[3]?.displayValue ? parseInt(linescores[3].value) + 72 : null;
+
+        const status = c.status?.type?.name || '';
+        const isCut = status.toLowerCase().includes('cut') || c.status?.type?.shortDetail?.toLowerCase().includes('cut');
+        const toparStr = c.score?.displayValue || 'E';
+        const topar = toparStr === 'E' ? 0 : parseInt(toparStr);
+        const thru = c.status?.type?.shortDetail || '';
+
+        const entry = { cut: isCut, topar, thru };
+        if (r1 !== null) entry.r1 = r1;
+        if (r2 !== null) entry.r2 = r2;
+        if (r3 !== null) entry.r3 = isCut ? CONFIG.cutScore : r3;
+        if (r4 !== null) entry.r4 = isCut ? CONFIG.cutScore : r4;
+
+        newScores[name] = entry;
+      });
+
+      if (Object.keys(newScores).length > 0) {
+        // Write to Firebase so leaderboard updates for everyone
+        await set(ref(db, 'scores'), newScores);
+        const ts = new Date().toLocaleTimeString();
+        updateEspnStatus(`✅ Live via ESPN · Updated ${ts}`);
+        console.log(`ESPN: synced ${Object.keys(newScores).length} players`);
+      } else {
+        updateEspnStatus('⚠️ ESPN returned 0 matching players — tournament may not have started');
+      }
+
+    } catch(err) {
+      console.error('ESPN fetch error:', err);
+      updateEspnStatus('⚠️ ESPN fetch failed — scores may be delayed');
+    }
+  }
+
+  function updateEspnStatus(msg) {
+    const el = document.getElementById('espnStatus');
+    if (el) el.textContent = msg;
+  }
+
+  function startEspnPolling() {
+    fetchEspnScores();
+    espnFetchInterval = setInterval(fetchEspnScores, 60000);
+  }
+
+  // ── LIVE FIREBASE DATA ────────────────────────────────────────────────────
   onValue(ref(db, 'scores'),  snap => { scores  = snap.val() || {}; renderLeaderboard(); });
   onValue(ref(db, 'rosters'), snap => { rosters = snap.val() || {}; renderLeaderboard(); });
   onValue(ref(db, 'config/locked'), snap => {
     CONFIG.locked = snap.val() || false;
     document.getElementById('lockStatus').textContent = CONFIG.locked ? '🔒 Rosters Locked' : '🔓 Rosters Open';
+  });
+  onValue(ref(db, 'config/rostersHidden'), snap => {
+    rostersHidden = snap.val() ?? true; // default hidden until you turn it off
+    renderLeaderboard();
+    const btn = document.getElementById('hideRostersBtn');
+    if (btn) btn.textContent = rostersHidden ? '👁 Show Rosters to All' : '🙈 Hide Rosters from Players';
+  });
+  onValue(ref(db, 'config/espnEnabled'), snap => {
+    const enabled = snap.val() ?? false;
+    const toggle = document.getElementById('espnToggle');
+    if (toggle) toggle.checked = enabled;
+    if (enabled) startEspnPolling();
+    else { clearInterval(espnFetchInterval); updateEspnStatus('ESPN auto-scoring is off'); }
   });
 
   // ── LEADERBOARD ───────────────────────────────────────────────────────────
@@ -178,41 +297,55 @@
     const el = document.getElementById('lbBody');
     if (!el) return;
 
-    const entries = Object.values(rosters).map(r => {
-      const { netScore, playerScores, top5Names } = calcNetScore(r.picks, scores);
-      return { ...r, netScore, playerScores, top5Names };
+    const entries = Object.entries(rosters).map(([key, r]) => {
+      const { netScore, playerScores, top5Names, tourneyStarted } = calcNetScore(r.picks, scores);
+      return { ...r, key, netScore, playerScores, top5Names, tourneyStarted };
     });
 
     entries.sort((a,b) => a.netScore - b.netScore);
 
-    // compute payouts
-    const n = Object.keys(rosters).length;
+    // Dynamic payout calculation
+    const n = entries.length;
     const pool = n * CONFIG.buyin;
     const payoutAmounts = CONFIG.payouts.map(p => Math.round(pool * p));
 
     document.getElementById('poolTotal').textContent = `$${pool.toLocaleString()}`;
     document.getElementById('participantCount').textContent = n;
 
+    // Update payout display
+    const pd = document.getElementById('payoutDisplay');
+    if (pd) pd.innerHTML = CONFIG.payouts.map((pct, i) => {
+      const place = ['1st','2nd','3rd'][i];
+      return `<span class="payout-pill">${place}: <strong>$${payoutAmounts[i]}</strong> <span style="opacity:.6">(${Math.round(pct*100)}%)</span></span>`;
+    }).join('');
+
     if (entries.length === 0) {
       el.innerHTML = `<div class="lb-empty">No entries yet — be the first to submit your picks!</div>`;
       return;
     }
+
+    // If rosters hidden and not admin: show names + entry count but blur picks
+    const hideRosters = rostersHidden && !isAdmin;
 
     el.innerHTML = entries.map((e, i) => {
       const place = i + 1;
       const medals = {1:'🥇',2:'🥈',3:'🥉'};
       const payout = payoutAmounts[i];
       const scoreClass = e.netScore > 0 ? 'pos' : e.netScore < 0 ? 'neg' : '';
+      const scoreDisplay = e.tourneyStarted ? fmtScore(e.netScore) : '—';
+      const clickable = !hideRosters;
       return `
-        <div class="lb-row ${place<=3?'place-'+place:''}" onclick="openRosterModal(${JSON.stringify(JSON.stringify(e))})">
+        <div class="lb-row ${place<=3?'place-'+place:''} ${clickable?'clickable':''}"
+             ${clickable ? `onclick="openRosterModal(${JSON.stringify(JSON.stringify(e))})"` : ''}>
           <div class="place-cell">
             <span class="place-num">${place}</span>
             <span>${medals[place]||''}</span>
           </div>
           <div class="name-cell">
             <span class="name-text">${e.name}</span>
+            ${hideRosters ? '<span class="hidden-tag">picks hidden</span>' : ''}
           </div>
-          <div class="score-cell ${scoreClass}">${fmtScore(e.netScore)}</div>
+          <div class="score-cell ${scoreClass}">${scoreDisplay}</div>
           <div class="payout-cell">
             ${payout ? `<span class="payout-amt">$${payout}</span>` : '<span class="payout-dash">—</span>'}
           </div>
@@ -263,10 +396,10 @@
   function buildSubmitForm() {
     ['A','B','C'].forEach(grp => {
       const el = document.getElementById(`picks${grp}`);
+      if (!el) return;
       const players = FIELD.filter(f => f.group === grp);
       const count = CONFIG.picks[grp];
-      el.innerHTML = `<p class="pick-instruction">Pick ${count} from Group ${grp}</p>` +
-        players.map(p => `
+      el.innerHTML = players.map(p => `
           <label class="player-option grp-${grp}">
             <input type="checkbox" name="grp${grp}" value="${p.name}" onchange="enforceLimit('${grp}', ${count})">
             <span class="player-label">
@@ -312,86 +445,108 @@
     });
 
     if (picks.length !== 7) return alert('Select exactly 7 players (2A + 2B + 3C)');
-
     if (CONFIG.locked) return alert('Rosters are locked — tee time has started!');
 
     try {
       document.getElementById('submitBtn').disabled = true;
-      document.getElementById('submitBtn').textContent = 'Submitting…';
-      const key = push(ref(db, 'rosters')).key;
-      await set(ref(db, `rosters/${key}`), { name, picks, submittedAt: Date.now() });
+      document.getElementById('submitBtn').textContent = 'Saving…';
+
+      // Check if this name already has an entry — update it if so
+      const existingEntry = Object.entries(rosters).find(([,r]) =>
+        r.name.toLowerCase() === name.toLowerCase()
+      );
+
+      if (existingEntry) {
+        const [existingKey] = existingEntry;
+        await set(ref(db, `rosters/${existingKey}`), { name: existingEntry[1].name, picks, updatedAt: Date.now() });
+        document.getElementById('successMsg').textContent = 'Picks updated! ✏️';
+      } else {
+        const key = push(ref(db, 'rosters')).key;
+        await set(ref(db, `rosters/${key}`), { name, picks, submittedAt: Date.now() });
+        document.getElementById('successMsg').textContent = "You're in! 🎉";
+      }
+
       document.getElementById('submitSuccess').style.display = 'block';
       document.getElementById('submitForm').style.display = 'none';
     } catch(err) {
-      alert('Error saving roster. Check Firebase config.');
+      alert('Error saving. Check Firebase setup.');
       console.error(err);
       document.getElementById('submitBtn').disabled = false;
       document.getElementById('submitBtn').textContent = 'Submit My Picks';
     }
   };
 
-  // ── ADMIN ─────────────────────────────────────────────────────────────────
+  window.editPicks = function() {
+    document.getElementById('submitSuccess').style.display = 'none';
+    document.getElementById('submitForm').style.display = 'block';
+    document.getElementById('submitBtn').disabled = false;
+    document.getElementById('submitBtn').textContent = 'Update My Picks';
+    // Re-populate form with existing picks if name matches
+    const name = document.getElementById('submitterName').value.trim();
+    const existing = Object.values(rosters).find(r => r.name.toLowerCase() === name.toLowerCase());
+    if (existing) {
+      // Reset all checkboxes first
+      document.querySelectorAll('input[type=checkbox][name^=grp]').forEach(b => { b.checked = false; b.disabled = false; });
+      existing.picks.forEach(pick => {
+        const box = document.querySelector(`input[value="${pick}"]`);
+        if (box) box.checked = true;
+      });
+      ['A','B','C'].forEach(grp => enforceLimit(grp, CONFIG.picks[grp]));
+    }
+  };
+
   window.adminLogin = function() {
     const pw = document.getElementById('adminPw').value;
     if (pw === CONFIG.adminPassword) {
       isAdmin = true;
       document.getElementById('adminLoginBox').style.display = 'none';
       document.getElementById('adminPanel').style.display = 'block';
-      buildAdminScoreEntry();
+      buildAdminEntries();
     } else {
       document.getElementById('adminPwError').style.display = 'block';
     }
   };
 
-  function buildAdminScoreEntry() {
-    const el = document.getElementById('scoreEntryTable');
-    el.innerHTML = FIELD.map(p => `
-      <tr>
-        <td class="admin-player">${p.name} <span class="grp-chip grp-${p.group}">${p.group}</span></td>
-        <td><input class="score-input" type="number" id="s_r1_${p.name}" placeholder="R1" min="60" max="100" onchange="scoreChanged('${p.name}')"></td>
-        <td><input class="score-input" type="number" id="s_r2_${p.name}" placeholder="R2" min="60" max="100" onchange="scoreChanged('${p.name}')"></td>
-        <td><input class="score-input" type="number" id="s_r3_${p.name}" placeholder="R3" min="60" max="${CONFIG.cutScore}" onchange="scoreChanged('${p.name}')"></td>
-        <td><input class="score-input" type="number" id="s_r4_${p.name}" placeholder="R4" min="60" max="${CONFIG.cutScore}" onchange="scoreChanged('${p.name}')"></td>
-        <td><label class="cut-check"><input type="checkbox" id="s_cut_${p.name}" onchange="scoreChanged('${p.name}')"> CUT</label></td>
-      </tr>
-    `).join('');
-
-    // Load existing scores into inputs
-    FIELD.forEach(p => {
-      const s = scores[p.name];
-      if (!s) return;
-      ['r1','r2','r3','r4'].forEach(r => {
-        const el = document.getElementById(`s_${r}_${p.name}`);
-        if (el && s[r] != null) el.value = s[r];
-      });
-      const cutEl = document.getElementById(`s_cut_${p.name}`);
-      if (cutEl) cutEl.checked = s.cut || false;
-    });
-  }
-
-  window.scoreChanged = async function(playerName) {
-    const getVal = (id) => {
-      const el = document.getElementById(id);
-      const v = parseInt(el?.value);
-      return isNaN(v) ? null : v;
-    };
-    const cut = document.getElementById(`s_cut_${playerName}`)?.checked || false;
-    const data = {
-      r1: getVal(`s_r1_${playerName}`),
-      r2: getVal(`s_r2_${playerName}`),
-      r3: cut ? CONFIG.cutScore : getVal(`s_r3_${playerName}`),
-      r4: cut ? CONFIG.cutScore : getVal(`s_r4_${playerName}`),
-      cut,
-    };
-    // Remove nulls
-    Object.keys(data).forEach(k => data[k] === null && delete data[k]);
-    await set(ref(db, `scores/${playerName}`), data);
+  window.updatePayouts = function() {
+    const p1 = parseFloat(document.getElementById('pct1').value) || 0;
+    const p2 = parseFloat(document.getElementById('pct2').value) || 0;
+    const p3 = parseFloat(document.getElementById('pct3').value) || 0;
+    const total = p1 + p2 + p3;
+    const totalEl = document.getElementById('pctTotal');
+    totalEl.textContent = `Total: ${total}%`;
+    totalEl.style.color = total === 100 ? 'var(--green-lite)' : 'var(--red)';
+    if (total === 100) {
+      CONFIG.payouts = [p1/100, p2/100, p3/100];
+      renderLeaderboard();
+    }
   };
 
   window.toggleLock = async function() {
     const newLocked = !CONFIG.locked;
     await set(ref(db, 'config/locked'), newLocked);
     alert(newLocked ? 'Rosters are now LOCKED 🔒' : 'Rosters are now OPEN 🔓');
+  };
+
+  window.toggleHideRosters = async function() {
+    const newHidden = !rostersHidden;
+    await set(ref(db, 'config/rostersHidden'), newHidden);
+  };
+
+  window.toggleEspn = async function() {
+    const enabled = document.getElementById('espnToggle').checked;
+    await set(ref(db, 'config/espnEnabled'), enabled);
+  };
+
+  window.manualFetch = async function() {
+    updateEspnStatus('Fetching…');
+    lastEspnFetch = 0;
+    await fetchEspnScores();
+  };
+
+  window.clearScores = async function() {
+    if (!confirm('Clear ALL scores from Firebase? Only do this to reset.')) return;
+    await set(ref(db, 'scores'), null);
+    updateEspnStatus('Scores cleared.');
   };
 
   window.deleteEntry = async function(key) {
@@ -402,15 +557,28 @@
 
   function buildAdminEntries() {
     const el = document.getElementById('adminEntries');
+    const entryEl = document.getElementById('entryCount');
     const entries = Object.entries(rosters);
+    if (entryEl) entryEl.textContent = entries.length;
     if (!entries.length) { el.innerHTML = '<p class="no-entries">No entries yet.</p>'; return; }
-    el.innerHTML = entries.map(([key, r]) => `
-      <div class="admin-entry-row">
-        <span>${r.name}</span>
-        <span class="entry-picks">${r.picks.join(', ')}</span>
-        <button class="del-btn" onclick="deleteEntry('${key}')">✕</button>
-      </div>
-    `).join('');
+    el.innerHTML = entries.map(([key, r]) => {
+      const grpA = r.picks.filter(p => FIELD.find(f=>f.name===p)?.group==='A');
+      const grpB = r.picks.filter(p => FIELD.find(f=>f.name===p)?.group==='B');
+      const grpC = r.picks.filter(p => FIELD.find(f=>f.name===p)?.group==='C');
+      return `
+        <div class="admin-entry-row">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;margin-bottom:4px">${r.name}</div>
+            <div class="entry-picks">
+              <span style="color:var(--green-lite)">A:</span> ${grpA.join(', ')} &nbsp;
+              <span style="color:var(--blue)">B:</span> ${grpB.join(', ')} &nbsp;
+              <span style="color:var(--orange)">C:</span> ${grpC.join(', ')}
+            </div>
+          </div>
+          <button class="del-btn" title="Delete entry" onclick="deleteEntry('${key}')">🗑</button>
+        </div>
+      `;
+    }).join('');
   }
 
   onValue(ref(db, 'rosters'), snap => {
@@ -424,13 +592,13 @@
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.getElementById(`view-${view}`).classList.add('active');
     document.querySelector(`.tab[data-view="${view}"]`).classList.add('active');
-    currentView = view;
-    if (view === 'submit' && !document.getElementById('picksA').innerHTML) buildSubmitForm();
+    if (view === 'submit') buildSubmitForm();
     if (view === 'admin' && isAdmin) buildAdminEntries();
   };
 
   window.addEventListener('DOMContentLoaded', () => {
     renderLeaderboard();
+    buildSubmitForm(); // build eagerly so picks are ready immediately
     document.getElementById('submitterName').addEventListener('input', updatePickCount);
   });
 </script>
@@ -674,11 +842,65 @@ header h1 em {
 .admin-entry-row { display:flex; align-items:flex-start; gap:12px; padding:10px 0; border-bottom:1px solid rgba(0,0,0,.07); font-size:.88rem; }
 .entry-picks { color:var(--muted); font-size:.78rem; flex:1; }
 .del-btn { background:none; border:none; color:var(--red); cursor:pointer; font-size:1rem; flex-shrink:0; }
-.no-entries { color:var(--muted); font-style:italic; font-size:.9rem; padding:12px 0; }
+.hidden-tag {
+  background: rgba(0,0,0,.1); color:rgba(0,0,0,.35);
+  font-family:'DM Mono',monospace; font-size:.62rem;
+  padding:2px 7px; border-radius:10px; margin-left:7px; letter-spacing:.05em;
+}
+.lb-row.clickable { cursor:pointer; }
+.lb-row:not(.clickable) { cursor:default; }
+.payout-summary { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px; }
+.payout-pill {
+  background:rgba(201,168,76,.12); border:1px solid rgba(201,168,76,.25);
+  border-radius:20px; padding:6px 14px;
+  font-family:'DM Mono',monospace; font-size:.78rem; color:var(--gold-lite);
+}
+.payout-pill strong { color:#fff; }
+.payout-editor { display:flex; flex-direction:column; gap:10px; max-width:280px; }
+.payout-row { display:flex; align-items:center; gap:12px; font-size:.9rem; color:var(--text); }
+.payout-row label { width:110px; flex-shrink:0; }
+.pct-input {
+  width:64px; padding:7px 10px; border:1px solid rgba(0,0,0,.15);
+  border-radius:6px; font-family:'DM Mono',monospace; font-size:.9rem;
+  text-align:center; outline:none;
+}
+.pct-input:focus { border-color:var(--green-lite); }
+.toggle-label { display:flex; align-items:center; gap:10px; cursor:pointer; }
+.toggle-label input { display:none; }
+.toggle-track {
+  width:44px; height:24px; background:rgba(0,0,0,.2); border-radius:12px;
+  position:relative; transition:background .2s; flex-shrink:0;
+}
+.toggle-track::after {
+  content:''; position:absolute; top:3px; left:3px;
+  width:18px; height:18px; border-radius:50%; background:#fff;
+  transition:transform .2s; box-shadow:0 1px 4px rgba(0,0,0,.3);
+}
+.toggle-label input:checked + .toggle-track { background:var(--green-lite); }
+.toggle-label input:checked + .toggle-track::after { transform:translateX(20px); }
 
 /* ── LEGEND ── */
 .legend { display:flex; gap:20px; margin-bottom:18px; flex-wrap:wrap; }
 .legend-item { display:flex; align-items:center; gap:7px; font-size:.82rem; color:rgba(255,255,255,.55); font-family:'DM Mono',monospace; }
+
+.masters-lb-btn {
+  display: inline-block;
+  margin-top: 14px;
+  padding: 10px 22px;
+  background: transparent;
+  border: 1.5px solid var(--gold);
+  border-radius: 30px;
+  color: var(--gold-lite);
+  font-family: 'DM Mono', monospace;
+  font-size: .8rem;
+  letter-spacing: .06em;
+  text-decoration: none;
+  transition: all .2s;
+}
+.masters-lb-btn:hover {
+  background: var(--gold);
+  color: var(--green-dark);
+}
 
 footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size:.78rem; font-family:'DM Mono',monospace; letter-spacing:.05em; }
 
@@ -706,6 +928,9 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
       <div class="meta-pill">$25 Buy-in · Top 5 of 7</div>
     </div>
     <div id="lockStatus">🔓 Rosters Open</div>
+    <a href="https://www.masters.com/leaderboard" target="_blank" rel="noopener" class="masters-lb-btn">
+      🏆 Live Masters Leaderboard ↗
+    </a>
   </header>
 
   <!-- TABS -->
@@ -721,8 +946,9 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
       <div class="legend-item"><span class="grp-dot grp-A"></span> Group A</div>
       <div class="legend-item"><span class="grp-dot grp-B"></span> Group B</div>
       <div class="legend-item"><span class="grp-dot grp-C"></span> Group C</div>
-      <div class="legend-item" style="color:rgba(255,255,255,.3)">Click row to see roster</div>
+      <div class="legend-item" style="color:rgba(255,255,255,.3)" id="rosterClickHint">Click row to see roster</div>
     </div>
+    <div id="payoutDisplay" class="payout-summary"></div>
     <div class="lb-card">
       <div class="lb-header">
         <span>Place</span>
@@ -769,9 +995,10 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
 
       <div id="submitSuccess" class="success-box">
         <div style="font-size:3rem">🎉</div>
-        <h3>You're in!</h3>
+        <h3 id="successMsg">You're in!</h3>
         <p>Your picks have been saved. Good luck at Augusta!</p>
-        <p style="margin-top:12px;font-size:.85rem">Share this page with friends so they can submit their picks too.</p>
+        <p style="margin-top:12px;font-size:.85rem">Need to change your picks? You can edit them until rosters lock at the first tee time.</p>
+        <button class="action-btn" style="margin-top:16px" onclick="editPicks()">✏️ Edit My Picks</button>
       </div>
     </div>
   </div>
@@ -796,28 +1023,51 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
           <h3>Pool Controls</h3>
           <div class="admin-actions">
             <button class="action-btn" onclick="toggleLock()">Toggle Roster Lock</button>
+            <button id="hideRostersBtn" class="action-btn" onclick="toggleHideRosters()">👁 Show Rosters to All</button>
           </div>
+          <p style="font-size:.8rem;color:var(--muted);margin-top:8px">Rosters are hidden from players by default — reveal them at the first tee time alongside locking.</p>
+        </div>
+
+        <div class="admin-section">
+          <h3>Payout Structure</h3>
+          <p style="font-size:.85rem;color:var(--muted);margin-bottom:14px">Set % of pool for each place. Must add up to 100%.</p>
+          <div class="payout-editor">
+            <div class="payout-row">
+              <label>🥇 1st place</label>
+              <input type="number" id="pct1" class="pct-input" value="70" min="0" max="100" onchange="updatePayouts()"> %
+            </div>
+            <div class="payout-row">
+              <label>🥈 2nd place</label>
+              <input type="number" id="pct2" class="pct-input" value="20" min="0" max="100" onchange="updatePayouts()"> %
+            </div>
+            <div class="payout-row">
+              <label>🥉 3rd place</label>
+              <input type="number" id="pct3" class="pct-input" value="10" min="0" max="100" onchange="updatePayouts()"> %
+            </div>
+            <div id="pctTotal" style="font-family:'DM Mono',monospace;font-size:.8rem;color:var(--muted);margin-top:8px">Total: 100%</div>
+          </div>
+        </div>
+
+        <div class="admin-section">
+          <h3>🏌️ Live Scoring — ESPN Auto-Sync</h3>
+          <p style="font-size:.85rem;color:var(--muted);margin-bottom:14px">
+            Turn this on when the tournament starts Thursday. It pulls scores from ESPN every 60 seconds and updates everyone's leaderboard automatically. Turn it off in the off-season.
+          </p>
+          <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap">
+            <label class="toggle-label">
+              <input type="checkbox" id="espnToggle" onchange="toggleEspn()">
+              <span class="toggle-track"></span>
+              <span style="font-family:'DM Mono',monospace;font-size:.85rem">Auto-sync ESPN scores</span>
+            </label>
+            <button class="action-btn" onclick="manualFetch()">⟳ Fetch Now</button>
+            <button class="action-btn" style="background:#c0392b;border-color:#c0392b" onclick="clearScores()">✕ Clear Scores</button>
+          </div>
+          <div id="espnStatus" style="font-family:'DM Mono',monospace;font-size:.8rem;color:var(--muted)">ESPN auto-scoring is off</div>
         </div>
 
         <div class="admin-section">
           <h3>Entries (<span id="entryCount">0</span>)</h3>
           <div id="adminEntries"></div>
-        </div>
-
-        <div class="admin-section">
-          <h3>Score Entry</h3>
-          <p style="font-size:.85rem;color:var(--muted);margin-bottom:14px">Enter round scores as you go. Scores auto-save on each change. Cut players: check the CUT box and R3/R4 will be set to <strong>80</strong> automatically.</p>
-          <div class="score-scroll">
-            <table class="score-table">
-              <thead>
-                <tr>
-                  <th>Player</th>
-                  <th>R1</th><th>R2</th><th>R3</th><th>R4</th><th>Cut?</th>
-                </tr>
-              </thead>
-              <tbody id="scoreEntryTable"></tbody>
-            </table>
-          </div>
         </div>
 
       </div>
