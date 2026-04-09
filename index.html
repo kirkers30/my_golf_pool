@@ -459,25 +459,61 @@
       }
 
       const inMoney = e.tourneyStarted && payout;
+      const rowId = `lb-row-${i}`;
+      const dropId = `lb-drop-${i}`;
+
+      // Build inline roster dropdown content
+      const isTop5 = new Set(e.top5Names || []);
+      const dropdownRows = clickable ? (e.playerScores || []).sort((a,b) => a.relative - b.relative).map(p => {
+        const counted = isTop5.has(p.name);
+        const grp = FIELD.find(f=>f.name===p.name)?.group || '';
+        const sc = fmtScore(p.relative);
+        const pcls = p.relative > 0 ? 'pos' : p.relative < 0 ? 'neg' : '';
+        const thruTag = p.thru ? `<span class="drop-thru">${p.thru}</span>` : '';
+
+        // Sparkline bar
+        const sv = p.relative;
+        const sm = 10;
+        const sc2 = Math.max(-sm, Math.min(sm, sv));
+        const sp = Math.abs(sc2) / sm * 50;
+        const sdir = sc2 < 0 ? 'right:50%' : 'left:50%';
+        const scol = sc2 < 0 ? '#27ae60' : sc2 > 0 ? '#c0392b' : '#999';
+        const spark = e.tourneyStarted && sv !== 0 ? `<div class="drop-spark"><div class="spark-center"></div><div class="spark-bar" style="width:${sp}%;${sdir};background:${scol}"></div></div>` : '';
+
+        return `<div class="drop-player ${counted ? '' : 'drop-benched'}">
+          <span class="grp-dot grp-${grp}"></span>
+          <span class="drop-name">${p.name}</span>
+          ${p.isCut ? '<span class="cut-tag">CUT</span>' : ''}
+          ${counted ? '<span class="drop-check">✓</span>' : ''}
+          ${thruTag}
+          <span class="drop-score ${pcls}">${e.tourneyStarted ? sc : '—'}</span>
+          ${spark}
+        </div>`;
+      }).join('') : '';
 
       return `
-        <div class="lb-row ${place<=3?'place-'+place:''} ${clickable?'clickable':''} ${isMe?'my-row':''} ${inMoney?'in-money':''}"
-             ${clickable ? `onclick="openRosterModal(${JSON.stringify(JSON.stringify(e))})"` : ''}>
-          <div class="place-cell">
-            <span class="place-num">${place}</span>
-            <span>${medals[place]||''}</span>
+        <div class="lb-entry ${isMe?'my-row':''}">
+          <div class="lb-row ${place<=3?'place-'+place:''} ${clickable?'clickable':''} ${inMoney?'in-money':''}"
+               id="${rowId}"
+               ${clickable ? `onclick="toggleDrop('${dropId}')"` : ''}>
+            <div class="place-cell">
+              <span class="place-num">${place}</span>
+              <span>${medals[place]||''}</span>
+            </div>
+            <div class="name-cell">
+              <span class="name-text">${e.name}</span>
+              ${isMe ? '<span class="me-tag">you</span>' : ''}
+              ${hideRosters ? '<span class="hidden-tag">picks hidden</span>' : ''}
+              ${clickable ? '<span class="drop-arrow" id="arrow-'+dropId+'">▾</span>' : ''}
+            </div>
+            <div class="score-cell ${scoreClass}">${scoreDisplay}</div>
+            <div class="score-cell" style="font-family:'DM Mono',monospace;font-size:.8rem;color:rgba(0,0,0,.5);text-align:right">${winProbDisplay}</div>
+            <div class="payout-cell">
+              ${arrow}
+              ${payout ? `<span class="payout-amt ${inMoney?'payout-live':''}">$${payout}</span>` : '<span class="payout-dash">—</span>'}
+            </div>
           </div>
-          <div class="name-cell">
-            <span class="name-text">${e.name}</span>
-            ${isMe ? '<span class="me-tag">you</span>' : ''}
-            ${hideRosters ? '<span class="hidden-tag">picks hidden</span>' : ''}
-          </div>
-          <div class="score-cell ${scoreClass}">${scoreDisplay}</div>
-          <div class="score-cell" style="font-family:'DM Mono',monospace;font-size:.8rem;color:rgba(0,0,0,.5);text-align:right">${winProbDisplay}</div>
-          <div class="payout-cell">
-            ${arrow}
-            ${payout ? `<span class="payout-amt ${inMoney?'payout-live':''}">$${payout}</span>` : '<span class="payout-dash">—</span>'}
-          </div>
+          ${clickable ? `<div class="lb-dropdown" id="${dropId}">${dropdownRows}</div>` : ''}
         </div>
       `;
     }).join('');
@@ -813,6 +849,25 @@
     document.getElementById('modalBackdrop').classList.remove('open');
   };
 
+  // ── INLINE ROSTER DROPDOWN ─────────────────────────────────────────────────
+  window._toggleDrop = window.toggleDrop = function(dropId) {
+    const el = document.getElementById(dropId);
+    if (!el) return;
+    const isOpen = el.classList.contains('drop-open');
+    // Close all other dropdowns first
+    document.querySelectorAll('.lb-dropdown.drop-open').forEach(d => {
+      d.classList.remove('drop-open');
+      const aId = 'arrow-' + d.id;
+      const arrow = document.getElementById(aId);
+      if (arrow) arrow.textContent = '▾';
+    });
+    if (!isOpen) {
+      el.classList.add('drop-open');
+      const arrow = document.getElementById('arrow-' + dropId);
+      if (arrow) arrow.textContent = '▴';
+    }
+  };
+
   // ── ROSTER SUBMISSION ─────────────────────────────────────────────────────
   function buildSubmitForm() {
     ['A','B','C'].forEach(grp => {
@@ -1084,8 +1139,13 @@
       const holeRes = await fetch(CORS + encodeURIComponent(
         `https://feeds.datagolf.com/preds/live-hole-stats?tour=pga&file_format=json&key=${DG_KEY}`
       ));
-      dgHoleData = await holeRes.json();
-      statusParts.push('holes');
+      const holeJson = await holeRes.json();
+      if (holeJson?.courses) {
+        dgHoleData = holeJson;
+        statusParts.push('holes');
+      } else {
+        console.warn('DG holes response has no courses:', Object.keys(holeJson));
+      }
     } catch(err) {
       console.error('DG hole-stats error:', err);
     }
@@ -1095,8 +1155,13 @@
       const sgRes = await fetch(CORS + encodeURIComponent(
         `https://feeds.datagolf.com/preds/live-tournament-stats?stats=sg_total,sg_ott,sg_app,sg_arg,sg_putt&round=event_avg&display=value&file_format=json&key=${DG_KEY}`
       ));
-      dgSgData = await sgRes.json();
-      statusParts.push('SG');
+      const sgJson = await sgRes.json();
+      if (sgJson?.live_stats || sgJson?.players) {
+        dgSgData = sgJson;
+        statusParts.push('SG');
+      } else {
+        console.warn('DG SG response has no live_stats:', Object.keys(sgJson));
+      }
     } catch(err) {
       console.error('DG SG-stats error:', err);
     }
@@ -2116,6 +2181,37 @@ header h1 em {
 
 footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size:.78rem; font-family:'DM Mono',monospace; letter-spacing:.05em; }
 
+/* ── LEADERBOARD DROPDOWN ── */
+.lb-entry { border-bottom:1px solid rgba(0,0,0,.06); }
+.lb-entry:last-child { border-bottom:none; }
+.lb-entry .lb-row { border-bottom:none; }
+.lb-dropdown {
+  max-height:0; overflow:hidden; transition:max-height .25s ease, padding .25s ease;
+  background:rgba(0,0,0,.03); padding:0 20px;
+}
+.lb-dropdown.drop-open {
+  max-height:500px; padding:10px 20px 14px;
+}
+.drop-player {
+  display:flex; align-items:center; gap:6px;
+  padding:5px 0; font-size:.85rem; color:var(--text);
+  border-bottom:1px solid rgba(0,0,0,.05);
+  flex-wrap:wrap;
+}
+.drop-player:last-child { border-bottom:none; }
+.drop-benched { opacity:.45; }
+.drop-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.drop-check { color:var(--green-lite); font-size:.7rem; font-weight:bold; }
+.drop-thru { font-family:'DM Mono',monospace; font-size:.68rem; color:var(--muted); }
+.drop-score { font-family:'DM Mono',monospace; font-size:.85rem; font-weight:500; min-width:36px; text-align:right; }
+.drop-spark { position:relative; height:4px; width:60px; flex-shrink:0; background:rgba(0,0,0,.06); border-radius:2px; overflow:hidden; }
+.drop-spark .spark-center { position:absolute; left:50%; top:0; bottom:0; width:1px; background:rgba(0,0,0,.12); }
+.drop-spark .spark-bar { position:absolute; top:0; bottom:0; border-radius:2px; }
+.drop-arrow {
+  font-family:'DM Mono',monospace; font-size:.7rem; color:var(--muted);
+  margin-left:6px; transition:transform .2s;
+}
+
 /* ── IN THE MONEY ── */
 .in-money { border-left:3px solid var(--gold); }
 .payout-live { color:#2ecc71; font-weight:600; }
@@ -2738,6 +2834,7 @@ function updatePayouts() { if(window._updatePayouts) window._updatePayouts(); }
 function showSgStat(s,b) { if(window._showSgStat) window._showSgStat(s,b); }
 function manualFetch() { if(window._manualFetch) window._manualFetch(); }
 function clearScores() { if(window._clearScores) window._clearScores(); }
+function toggleDrop(id) { if(window._toggleDrop) window._toggleDrop(id); }
 </script>
 <script>
 const _origBuildAdminEntries = window.buildAdminEntries;
