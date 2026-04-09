@@ -197,97 +197,119 @@
   setInterval(updateCountdown, 1000);
   updateCountdown();
 
-  // ── ESPN AUTO-SCORING ─────────────────────────────────────────────────────
-  // Name normalization: ESPN names → our field names
-  const ESPN_NAME_MAP = {
-    'Ludvig Åberg':   'Ludvig Aberg',
-    'Nicolai Højgaard':'Nicolai Hojgaard',
-    'Rasmus Højgaard': 'Rasmus Hojgaard',
-    'José María Olazábal':'Jose Maria Olazabal',
-    'Ángel Cabrera':  'Angel Cabrera',
-    'Hao-tong Li':    'Hao-Tong Li',
-    'Rasmus Neergaard Petersen':'Rasmus Neergaard-Petersen',
-  };
-
-  function normalizeEspnName(name) {
-    return ESPN_NAME_MAP[name] || name;
+  // ── DATAGOLF LIVE SCORING ────────────────────────────────────────────────
+  // DG uses "Last, First" name format per API docs
+  function normalizeDgName(raw) {
+    if (!raw) return '';
+    let name = raw.trim();
+    if (name.includes(',')) {
+      const parts = name.split(',');
+      name = parts[1].trim() + ' ' + parts[0].trim();
+    }
+    // Handle any remaining accent differences
+    const MAP = {
+      'Ludvig Aberg': 'Ludvig Aberg',
+      'Nicolai Hojgaard': 'Nicolai Hojgaard',
+      'Rasmus Hojgaard': 'Rasmus Hojgaard',
+    };
+    return MAP[name] || name;
   }
 
-  async function fetchEspnScores() {
-    // Only fetch once per 60s to be polite
-    if (Date.now() - lastEspnFetch < 55000) return;
-    lastEspnFetch = Date.now();
+  let dgProjections = {}; // {playerName: winProb} for projected finish ordering
+  let lastDgScoreFetch = 0;
 
+  async function fetchDGScores(force = false) {
+    const MIN_INTERVAL = 115000; // ~2 min
+    if (!force && Date.now() - lastDgScoreFetch < MIN_INTERVAL) return;
+    lastDgScoreFetch = Date.now();
     const CORS = 'https://corsproxy.io/?';
-    const ESPN_URL = 'https://site.api.espn.com/apis/site/v2/sports/golf/leaderboard?league=pga';
 
     try {
-      const res  = await fetch(CORS + encodeURIComponent(ESPN_URL));
-      const data = await res.json();
+      // in-play: current_score, current_pos, today, thru, round, win prob
+      // live-stats: player_name (Last,First), total (cumulative to par), thru
+      const [inPlayRes, statsRes] = await Promise.all([
+        fetch(CORS + encodeURIComponent(
+          `https://feeds.datagolf.com/preds/in-play?tour=pga&odds_format=percent&file_format=json&key=${DG_KEY}`
+        )),
+        fetch(CORS + encodeURIComponent(
+          `https://feeds.datagolf.com/preds/live-tournament-stats?stats=sg_total&round=event_cumulative&display=value&file_format=json&key=${DG_KEY}`
+        )),
+      ]);
 
-      // Find the Masters event
-      const events = data.events || [];
-      const mastersEvent = events.find(e =>
-        e.name?.toLowerCase().includes('master') ||
-        e.shortName?.toLowerCase().includes('master')
-      ) || events[0];
+      const inPlay = await inPlayRes.json();
+      const stats  = await statsRes.json();
 
-      if (!mastersEvent) {
-        console.log('ESPN: Masters not found in events', events.map(e=>e.name));
-        updateEspnStatus('⚠️ Masters not live yet on ESPN');
+      if (!inPlay?.data?.length) {
+        updateEspnStatus('⚠️ DG: tournament not yet in play');
         return;
       }
 
-      const competitors = mastersEvent.competitions?.[0]?.competitors || [];
-      if (!competitors.length) {
-        updateEspnStatus('⚠️ No competitors found');
-        return;
-      }
+      // Build lookup from live-stats for sg_total
+      const statsByName = {};
+      (stats?.live_stats || []).forEach(p => {
+        statsByName[normalizeDgName(p.player_name)] = p;
+      });
 
-      // Build scores object from ESPN data
       const newScores = {};
-      competitors.forEach(c => {
-        const rawName = c.athlete?.displayName || '';
-        const name = normalizeEspnName(rawName);
+      const newProj   = {};
 
-        // Check if this player is in our field
-        const inField = FIELD.some(f => f.name === name);
-        if (!inField) return;
+      inPlay.data.forEach(p => {
+        const name = normalizeDgName(p.player_name);
+        if (!FIELD.some(f => f.name === name)) return;
 
-        const linescores = c.linescores || [];
-        const r1 = linescores[0]?.displayValue ? parseInt(linescores[0].value) + 72 : null;
-        const r2 = linescores[1]?.displayValue ? parseInt(linescores[1].value) + 72 : null;
-        const r3 = linescores[2]?.displayValue ? parseInt(linescores[2].value) + 72 : null;
-        const r4 = linescores[3]?.displayValue ? parseInt(linescores[3].value) + 72 : null;
+        const isCut = ['CUT','WD','DQ','MDF'].includes(String(p.current_pos).toUpperCase());
+        const currentScore = typeof p.current_score === 'number' ? p.current_score : 0;
+        const thruRaw = p.thru;
+        const round   = p.round || 1;
+        const today   = typeof p.today === 'number' ? p.today : 0;
 
-        const status = c.status?.type?.name || '';
-        const isCut = status.toLowerCase().includes('cut') || c.status?.type?.shortDetail?.toLowerCase().includes('cut');
-        const toparStr = c.score?.displayValue || 'E';
-        const topar = toparStr === 'E' ? 0 : parseInt(toparStr);
-        const thru = c.status?.type?.shortDetail || '';
+        const entry = {
+          cut:   isCut,
+          topar: currentScore,
+          thru:  thruRaw === 18 || thruRaw === 'F' ? 'F' : (thruRaw || ''),
+          round,
+        };
 
-        const entry = { cut: isCut, topar, thru };
-        if (r1 !== null) entry.r1 = r1;
-        if (r2 !== null) entry.r2 = r2;
-        if (r3 !== null) entry.r3 = isCut ? CONFIG.cutScore : r3;
-        if (r4 !== null) entry.r4 = isCut ? CONFIG.cutScore : r4;
+        // Reconstruct round strokes from cumulative score + today
+        // current_score = cumulative score to par through all holes played today + prior rounds
+        if (thruRaw === 18 || thruRaw === 'F') {
+          // Completed today's round
+          const todayStrokes = 72 + today;
+          const priorStrokes = 72 * (round - 1) + (currentScore - today); // prior rounds total
+          if (round === 1) { entry.r1 = todayStrokes; }
+          if (round === 2) { entry.r1 = priorStrokes - 72; entry.r2 = todayStrokes; }
+          if (round === 3) { entry.r3 = isCut ? CONFIG.cutScore : todayStrokes; }
+          if (round === 4) { entry.r4 = isCut ? CONFIG.cutScore : todayStrokes; }
+        } else {
+          // Mid-round — just store cumulative, pool scoring will use topar
+          if (round >= 2) entry.r1 = 72 + (currentScore - today);
+        }
+
+        if (isCut) { entry.r3 = CONFIG.cutScore; entry.r4 = CONFIG.cutScore; }
+
+        // Attach sg_total if available
+        const st = statsByName[name];
+        if (st?.sg_total != null) entry.sg_total = st.sg_total;
+
+        // Win probability drives projected finish
+        if (typeof p.win === 'number') newProj[name] = p.win;
 
         newScores[name] = entry;
       });
 
       if (Object.keys(newScores).length > 0) {
-        // Write to Firebase so leaderboard updates for everyone
         await set(ref(db, 'scores'), newScores);
+        dgProjections = newProj;
         const ts = new Date().toLocaleTimeString();
-        updateEspnStatus(`✅ Live via ESPN · Updated ${ts}`);
-        console.log(`ESPN: synced ${Object.keys(newScores).length} players`);
+        updateEspnStatus(`✅ DataGolf · ${Object.keys(newScores).length} players · Updated ${ts}`);
+        renderProjectedFinish();
       } else {
-        updateEspnStatus('⚠️ ESPN returned 0 matching players — tournament may not have started');
+        updateEspnStatus('⚠️ DG: 0 matching players — may not have started');
       }
 
     } catch(err) {
-      console.error('ESPN fetch error:', err);
-      updateEspnStatus('⚠️ ESPN fetch failed — scores may be delayed');
+      console.error('DG scoring error:', err);
+      updateEspnStatus('⚠️ DG fetch failed — see console');
     }
   }
 
@@ -297,13 +319,75 @@
   }
 
   function startEspnPolling() {
-    fetchEspnScores();
-    espnFetchInterval = setInterval(fetchEspnScores, 60000);
+    fetchDGScores();
+    espnFetchInterval = setInterval(fetchDGScores, 120000); // 2 min auto-refresh
+  }
+
+  // ── PROJECTED POOL FINISH ─────────────────────────────────────────────────
+  // Uses DG win probability to rank projected pool finish.
+  // More accurate than trying to project exact scores — DG's model already
+  // accounts for remaining holes, lie, pace of play, etc.
+  function renderProjectedFinish() {
+    const el = document.getElementById('projBody');
+    if (!el) return;
+    if (!Object.keys(dgProjections).length) {
+      el.innerHTML = '<p class="proj-placeholder">Projected finish available once tournament begins.</p>';
+      return;
+    }
+
+    const entries = Object.entries(rosters).map(([, r]) => {
+      // Sum top-5 win probabilities as a proxy for roster strength
+      const probs = r.picks.map(name => dgProjections[name] ?? 0)
+                           .sort((a,b) => b - a).slice(0, CONFIG.topN);
+      const totalWinProb = probs.reduce((s,v) => s+v, 0);
+
+      // Also compute current pool score for display
+      const { netScore } = calcNetScore(r.picks, scores);
+
+      return { name: r.name, totalWinProb, netScore };
+    });
+
+    // Sort by current score first, break ties by win probability
+    entries.sort((a, b) => {
+      if (a.netScore !== b.netScore) return a.netScore - b.netScore;
+      return b.totalWinProb - a.totalWinProb;
+    });
+
+    const n = Object.keys(rosters).length;
+    const pool = n * CONFIG.buyin;
+    const payouts = CONFIG.payouts.map(p => Math.round(pool * p));
+
+    el.innerHTML = entries.map((e, i) => {
+      const place = i + 1;
+      const medals = {1:'🥇',2:'🥈',3:'🥉'};
+      const sc = fmtScore(e.netScore);
+      const cls = e.netScore < 0 ? 'neg' : e.netScore > 0 ? 'pos' : '';
+      const payout = payouts[i];
+      const isMe = myName && e.name.toLowerCase() === myName.toLowerCase();
+      const probPct = (e.totalWinProb * 100).toFixed(1);
+      return `
+        <div class="proj-row ${isMe ? 'my-row' : ''}">
+          <div class="place-cell">
+            <span class="place-num">${place}</span>
+            <span>${medals[place]||''}</span>
+          </div>
+          <div class="name-cell">
+            <span class="name-text">${e.name}</span>
+            ${isMe ? '<span class="me-tag">you</span>' : ''}
+            <span class="proj-prob">${probPct}% win prob</span>
+          </div>
+          <div class="score-cell ${cls}">${sc}</div>
+          <div class="payout-cell">
+            ${payout ? `<span class="payout-amt">$${payout}</span>` : '<span class="payout-dash">—</span>'}
+          </div>
+        </div>
+      `;
+    }).join('');
   }
 
   // ── LIVE FIREBASE DATA ────────────────────────────────────────────────────
-  onValue(ref(db, 'scores'),  snap => { scores  = snap.val() || {}; renderLeaderboard(); });
-  onValue(ref(db, 'rosters'), snap => { rosters = snap.val() || {}; renderLeaderboard(); });
+  onValue(ref(db, 'scores'),  snap => { scores  = snap.val() || {}; renderLeaderboard(); renderProjectedFinish(); });
+  onValue(ref(db, 'rosters'), snap => { rosters = snap.val() || {}; renderLeaderboard(); renderProjectedFinish(); });
   onValue(ref(db, 'config/locked'), snap => {
     CONFIG.locked = snap.val() || false;
     document.getElementById('lockStatus').textContent = CONFIG.locked ? '🔒 Rosters Locked' : '🔓 Rosters Open';
@@ -319,7 +403,7 @@
     const toggle = document.getElementById('espnToggle');
     if (toggle) toggle.checked = enabled;
     if (enabled) startEspnPolling();
-    else { clearInterval(espnFetchInterval); updateEspnStatus('ESPN auto-scoring is off'); }
+    else { clearInterval(espnFetchInterval); updateEspnStatus('Live scoring is off — enable in Admin to start'); }
   });
 
   // ── LEADERBOARD ───────────────────────────────────────────────────────────
@@ -645,8 +729,8 @@
 
   window.manualFetch = async function() {
     updateEspnStatus('Fetching…');
-    lastEspnFetch = 0;
-    await fetchEspnScores();
+    lastDgScoreFetch = 0;
+    await fetchDGScores(true);
   };
 
   window.clearScores = async function() {
@@ -1738,7 +1822,13 @@ header h1 em {
 .sg-val { font-family:'DM Mono',monospace; font-size:.8rem; font-weight:500; text-align:right; }
 .sg-pos { color:var(--green-lite); }
 .sg-neg { color:var(--red); }
-.course-placeholder { color:rgba(255,255,255,.35); font-style:italic; font-size:.88rem; padding:12px 0; }
+.proj-placeholder { color:rgba(255,255,255,.35); font-style:italic; font-size:.88rem; padding:20px; text-align:center; }
+.proj-row {
+  display:grid; grid-template-columns:52px 1fr 110px 90px; padding:0 20px; gap:8px;
+  align-items:center; min-height:50px; border-bottom:1px solid rgba(0,0,0,.06);
+}
+.proj-row:last-child { border-bottom:none; }
+.proj-prob { font-family:'DM Mono',monospace; font-size:.65rem; color:rgba(0,0,0,.35); margin-left:6px; }
 
 footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size:.78rem; font-family:'DM Mono',monospace; letter-spacing:.05em; }
 
@@ -1872,6 +1962,21 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
       <div class="own-title">📊 Player Ownership</div>
       <div id="ownershipBody"><p style="color:rgba(255,255,255,.35);font-size:.85rem;font-style:italic">Ownership visible after rosters unlock.</p></div>
     </div>
+    <!-- PROJECTED FINISH -->
+    <div class="ownership-section" style="margin-top:28px">
+      <div class="own-title">🔮 Projected Pool Finish <span style="font-size:.75rem;font-weight:400;opacity:.5;font-family:'DM Mono',monospace">· DataGolf live model</span></div>
+      <p style="font-size:.78rem;color:rgba(255,255,255,.35);font-family:'DM Mono',monospace;margin-bottom:14px">Based on each player's projected 72-hole score. Updates every 2 minutes.</p>
+      <div class="lb-card" style="margin-top:0">
+        <div class="lb-header">
+          <span>Place</span>
+          <span>Participant</span>
+          <span style="text-align:right">Proj Score</span>
+          <span style="text-align:right">Proj Payout</span>
+        </div>
+        <div id="projBody"><p class="proj-placeholder">Projected finish available once tournament begins.</p></div>
+      </div>
+    </div>
+
   </div>
 
   <!-- ── SUBMIT VIEW ── -->
@@ -2060,20 +2165,20 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
         </div>
 
         <div class="admin-section">
-          <h3>🏌️ Live Scoring — ESPN Auto-Sync</h3>
+          <h3>🏌️ Live Scoring — DataGolf Auto-Sync</h3>
           <p style="font-size:.85rem;color:var(--muted);margin-bottom:14px">
-            Turn this on when the tournament starts Thursday. It pulls scores from ESPN every 60 seconds and updates everyone's leaderboard automatically. Turn it off in the off-season.
+            Turn this on when the tournament starts Thursday morning. Pulls live scores + projected finishes from DataGolf every <strong>2 minutes</strong> and updates everyone's leaderboard automatically.
           </p>
           <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap">
             <label class="toggle-label">
               <input type="checkbox" id="espnToggle" onchange="toggleEspn()">
               <span class="toggle-track"></span>
-              <span style="font-family:'DM Mono',monospace;font-size:.85rem">Auto-sync ESPN scores</span>
+              <span style="font-family:'DM Mono',monospace;font-size:.85rem">Auto-sync DataGolf scores</span>
             </label>
-            <button class="action-btn" onclick="manualFetch()">⟳ Fetch Now</button>
+            <button class="action-btn" onclick="fetchDGScores(true)">⟳ Fetch Now</button>
             <button class="action-btn" style="background:#c0392b;border-color:#c0392b" onclick="clearScores()">✕ Clear Scores</button>
           </div>
-          <div id="espnStatus" style="font-family:'DM Mono',monospace;font-size:.8rem;color:var(--muted)">ESPN auto-scoring is off</div>
+          <div id="espnStatus" style="font-family:'DM Mono',monospace;font-size:.8rem;color:var(--muted)">Live scoring is off — enable above to start</div>
         </div>
 
         <div class="admin-section">
