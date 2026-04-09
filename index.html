@@ -458,8 +458,10 @@
         else if (prev < place) arrow = `<span class="arrow-down">▼${place - prev}</span>`;
       }
 
+      const inMoney = e.tourneyStarted && payout;
+
       return `
-        <div class="lb-row ${place<=3?'place-'+place:''} ${clickable?'clickable':''} ${isMe?'my-row':''}"
+        <div class="lb-row ${place<=3?'place-'+place:''} ${clickable?'clickable':''} ${isMe?'my-row':''} ${inMoney?'in-money':''}"
              ${clickable ? `onclick="openRosterModal(${JSON.stringify(JSON.stringify(e))})"` : ''}>
           <div class="place-cell">
             <span class="place-num">${place}</span>
@@ -474,7 +476,7 @@
           <div class="score-cell" style="font-family:'DM Mono',monospace;font-size:.8rem;color:rgba(0,0,0,.5);text-align:right">${winProbDisplay}</div>
           <div class="payout-cell">
             ${arrow}
-            ${payout ? `<span class="payout-amt">$${payout}</span>` : '<span class="payout-dash">—</span>'}
+            ${payout ? `<span class="payout-amt ${inMoney?'payout-live':''}">$${payout}</span>` : '<span class="payout-dash">—</span>'}
           </div>
         </div>
       `;
@@ -482,8 +484,12 @@
 
     prevRankings = newRankings;
 
-    // Ownership section
-    renderOwnership();
+    // Snapshot for movers (only if first time)
+    if (!Object.keys(prevPlayerScores).length) snapshotPlayerScores();
+
+    // Secondary renders
+    renderMovers();
+    renderCutTracker();
   }
 
   function renderOwnership() {
@@ -509,6 +515,231 @@
         </div>
       `;
     }).join('');
+  }
+
+  // ── ROSTER HEATMAP MATRIX ──────────────────────────────────────────────────
+  function renderHeatmap() {
+    const el = document.getElementById('heatmapBody');
+    if (!el) return;
+    const rosterArr = Object.entries(rosters);
+    if (!rosterArr.length || (rostersHidden && !isAdmin)) {
+      el.innerHTML = '<p style="color:rgba(255,255,255,.35);font-size:.85rem;font-style:italic;padding:20px">Roster matrix visible once rosters are revealed.</p>';
+      return;
+    }
+
+    const tourneyStarted = Object.keys(scores).length > 0;
+
+    // Collect all drafted players and their scores
+    const draftedSet = new Set();
+    rosterArr.forEach(([,r]) => r.picks.forEach(p => draftedSet.add(p)));
+
+    const playerData = [...draftedSet].map(name => {
+      const key = name.replace(/[.#$\/\[\]]/g, '_');
+      const s = scores[name] || scores[key];
+      const topar = s && typeof s.topar === 'number' ? s.topar : null;
+      const thru = s?.thru || '';
+      const isCut = s?.cut || false;
+      return { name, topar, thru, isCut, group: FIELD.find(f=>f.name===name)?.group || 'C' };
+    });
+
+    // Sort: by topar (best first), then alphabetically
+    playerData.sort((a,b) => {
+      if (a.topar !== null && b.topar !== null) return a.topar - b.topar;
+      if (a.topar !== null) return -1;
+      if (b.topar !== null) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    // Sort teams by current pool score
+    const teamData = rosterArr.map(([key, r]) => {
+      const { netScore } = calcNetScore(r.picks, scores);
+      const pickSet = new Set(r.picks);
+      // Determine top 5
+      const { top5Names } = calcNetScore(r.picks, scores);
+      return { key, name: r.name, picks: pickSet, netScore, top5: new Set(top5Names) };
+    }).sort((a,b) => a.netScore - b.netScore);
+
+    // Color scale: blue (under par) → white (even) → red (over par)
+    function heatColor(topar) {
+      if (topar === null) return 'transparent';
+      const clamped = Math.max(-10, Math.min(10, topar));
+      if (clamped < 0) {
+        const t = Math.abs(clamped) / 10;
+        const r = Math.round(255 - t * 200);
+        const g = Math.round(255 - t * 120);
+        return `rgb(${r},${g},255)`;
+      } else if (clamped > 0) {
+        const t = clamped / 10;
+        const g = Math.round(255 - t * 180);
+        const b = Math.round(255 - t * 200);
+        return `rgb(255,${g},${b})`;
+      }
+      return '#f0f0f0';
+    }
+
+    const headerCells = teamData.map(t => {
+      const sc = tourneyStarted ? fmtScore(t.netScore) : '';
+      const isMe = myName && t.name.toLowerCase() === myName.toLowerCase();
+      return `<th class="hm-team-header ${isMe ? 'hm-me' : ''}">
+        <div class="hm-team-name">${t.name.split(' ')[0]}</div>
+        ${sc ? `<div class="hm-team-score">${sc}</div>` : ''}
+      </th>`;
+    }).join('');
+
+    const rows = playerData.map(p => {
+      const scoreTxt = tourneyStarted && p.topar !== null
+        ? `<span class="${p.topar < 0 ? 'neg' : p.topar > 0 ? 'pos' : ''}">${fmtScore(p.topar)}</span>`
+        : '';
+      const cells = teamData.map(t => {
+        const owned = t.picks.has(p.name);
+        if (!owned) return '<td class="hm-cell hm-empty"></td>';
+        const isTop5 = t.top5.has(p.name);
+        const bg = heatColor(p.topar);
+        const textColor = p.topar !== null ? (Math.abs(p.topar) > 5 ? '#fff' : '#222') : '#222';
+        return `<td class="hm-cell" style="background:${bg};color:${textColor}">
+          ${isTop5 ? '✓' : '·'}
+        </td>`;
+      }).join('');
+
+      return `<tr>
+        <td class="hm-player-cell">
+          <span class="grp-dot grp-${p.group}"></span>
+          <span class="hm-player-name">${p.name}</span>
+          ${p.isCut ? '<span class="cut-tag">CUT</span>' : ''}
+        </td>
+        <td class="hm-score-cell">${scoreTxt}</td>
+        ${cells}
+      </tr>`;
+    }).join('');
+
+    el.innerHTML = `
+      <table class="hm-table">
+        <thead><tr>
+          <th class="hm-player-header">Player</th>
+          <th class="hm-score-header">Score</th>
+          ${headerCells}
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="hm-legend">
+        <span class="hm-legend-label">Under par</span>
+        <div class="hm-legend-bar"></div>
+        <span class="hm-legend-label">Over par</span>
+        <span class="hm-legend-sep">·</span>
+        <span class="hm-legend-label">✓ = counting toward score</span>
+      </div>
+    `;
+  }
+
+  // ── BIGGEST MOVERS ────────────────────────────────────────────────────────
+  let prevPlayerScores = {};
+
+  function renderMovers() {
+    const el = document.getElementById('moversBody');
+    const section = document.getElementById('moversSection');
+    if (!el || !section) return;
+
+    const tourneyStarted = Object.keys(scores).length > 0;
+    if (!tourneyStarted || !Object.keys(prevPlayerScores).length) {
+      section.style.display = 'none';
+      return;
+    }
+
+    const movers = [];
+    FIELD.forEach(f => {
+      const key = f.name.replace(/[.#$\/\[\]]/g, '_');
+      const s = scores[f.name] || scores[key];
+      if (!s || typeof s.topar !== 'number') return;
+      const prev = prevPlayerScores[f.name];
+      if (prev === undefined) return;
+      const delta = s.topar - prev;
+      if (delta !== 0) movers.push({ name: f.name, group: f.group, delta, topar: s.topar });
+    });
+
+    if (!movers.length) { section.style.display = 'none'; return; }
+
+    movers.sort((a,b) => a.delta - b.delta); // best movers first
+    const top3Up = movers.filter(m => m.delta < 0).slice(0, 3);
+    const top3Down = movers.filter(m => m.delta > 0).slice(-3).reverse();
+    const show = [...top3Up, ...top3Down];
+    if (!show.length) { section.style.display = 'none'; return; }
+
+    section.style.display = 'block';
+    el.innerHTML = show.map(m => {
+      const arrow = m.delta < 0 ? '▲' : '▼';
+      const cls = m.delta < 0 ? 'mover-up' : 'mover-down';
+      return `<span class="mover-chip ${cls}">
+        <span class="grp-dot grp-${m.group}"></span>
+        ${m.name.split(' ').pop()} ${arrow}${Math.abs(m.delta)}
+      </span>`;
+    }).join('');
+  }
+
+  function snapshotPlayerScores() {
+    FIELD.forEach(f => {
+      const key = f.name.replace(/[.#$\/\[\]]/g, '_');
+      const s = scores[f.name] || scores[key];
+      if (s && typeof s.topar === 'number') prevPlayerScores[f.name] = s.topar;
+    });
+  }
+
+  // Snapshot every 10 minutes so movers reflect recent changes
+  setInterval(() => { snapshotPlayerScores(); }, 600000);
+
+  // ── CUT TRACKER ───────────────────────────────────────────────────────────
+  function renderCutTracker() {
+    const el = document.getElementById('cutBody');
+    const section = document.getElementById('cutTracker');
+    if (!el || !section) return;
+
+    const tourneyStarted = Object.keys(scores).length > 0;
+    if (!tourneyStarted) { section.style.display = 'none'; return; }
+
+    // Collect all field scores
+    const playerScores = [];
+    FIELD.forEach(f => {
+      const key = f.name.replace(/[.#$\/\[\]]/g, '_');
+      const s = scores[f.name] || scores[key];
+      if (!s) return;
+      const isCut = s.cut || false;
+      if (isCut) return; // already cut, skip
+      if (typeof s.topar !== 'number') return;
+      playerScores.push({ name: f.name, group: f.group, topar: s.topar, thru: s.thru || '' });
+    });
+
+    if (!playerScores.length) { section.style.display = 'none'; return; }
+
+    // Estimate cut line: top 50 + ties make the cut at the Masters
+    playerScores.sort((a,b) => a.topar - b.topar);
+    const cutIdx = Math.min(49, playerScores.length - 1);
+    const cutLine = playerScores[cutIdx]?.topar;
+    if (cutLine === undefined) { section.style.display = 'none'; return; }
+
+    // Show players near the bubble (within 2 strokes of cut line)
+    const bubble = playerScores.filter(p => p.topar >= cutLine - 2 && p.topar <= cutLine + 2);
+    if (!bubble.length) { section.style.display = 'none'; return; }
+
+    // Check which are pool players
+    const poolPlayers = new Set();
+    Object.values(rosters).forEach(r => r.picks.forEach(p => poolPlayers.add(p)));
+
+    section.style.display = 'block';
+    el.innerHTML = `
+      <div class="cut-line-label">Projected cut: <strong>${fmtScore(cutLine)}</strong> (top 50 + ties)</div>
+      <div class="cut-bubble">
+        ${bubble.map(p => {
+          const inPool = poolPlayers.has(p.name);
+          const safe = p.topar <= cutLine;
+          return `<div class="cut-row ${safe ? 'cut-safe' : 'cut-danger'} ${inPool ? 'cut-pool' : ''}">
+            <span class="grp-dot grp-${p.group}"></span>
+            <span class="cut-name">${p.name}</span>
+            <span class="cut-score ${p.topar < 0 ? 'neg' : p.topar > 0 ? 'pos' : ''}">${fmtScore(p.topar)}</span>
+            <span class="cut-thru">${p.thru}</span>
+            ${inPool ? '<span class="cut-pool-tag">POOL</span>' : ''}
+          </div>`;
+        }).join('')}
+      </div>
+    `;
   }
 
   // ── ROSTER MODAL ──────────────────────────────────────────────────────────
@@ -540,6 +771,19 @@
 
       const thru = p.thru ? `<span class="thru-tag">${p.thru}</span>` : '';
 
+      // Sparkline bar — visual relative to par
+      const sparkVal = p.relative;
+      const sparkMax = 10;
+      const sparkClamped = Math.max(-sparkMax, Math.min(sparkMax, sparkVal));
+      const sparkPct = Math.abs(sparkClamped) / sparkMax * 50;
+      const sparkDir = sparkClamped < 0 ? 'left' : 'right';
+      const sparkColor = sparkClamped < 0 ? '#27ae60' : sparkClamped > 0 ? '#c0392b' : '#999';
+      const sparkBar = tourneyStarted && sparkVal !== 0 ? `
+        <div class="spark-wrap">
+          <div class="spark-center"></div>
+          <div class="spark-bar" style="width:${sparkPct}%;${sparkDir === 'left' ? 'right:50%' : 'left:50%'};background:${sparkColor}"></div>
+        </div>` : '';
+
       return `
         <tr class="${counted ? 'counted' : 'not-counted'}">
           <td>
@@ -551,6 +795,7 @@
               ${thru}
             </div>
             ${tourneyStarted ? `<div class="rounds-row">${rounds}</div>` : ''}
+            ${sparkBar}
           </td>
           <td class="${cls} mono">${tourneyStarted ? sc : '—'}</td>
         </tr>
@@ -937,6 +1182,38 @@
     totalAvgEl.textContent = totalAvg.toFixed(1);
     totalRelEl.textContent = (totalRel > 0 ? '+' : '') + totalRel.toFixed(1);
     totalRelEl.className = totalRel < 0 ? 'hs-under' : 'hs-over';
+
+    // Update Amen Corner mini-card
+    [11,12,13].forEach(holeNum => {
+      const augustaHole = AUGUSTA_HOLES.find(h => h.hole === holeNum);
+      const live = liveMap[holeNum];
+      const avg = live ? live.avg_score : augustaHole?.histAvg;
+      const avgEl = document.getElementById(`amenAvg${holeNum}`);
+      const distEl = document.getElementById(`amenDist${holeNum}`);
+      const holeEl = document.getElementById(`amenHole${holeNum}`);
+      if (avgEl && avg) {
+        const rel = avg - augustaHole.par;
+        const relStr = rel > 0 ? `+${rel.toFixed(2)}` : rel.toFixed(2);
+        avgEl.textContent = `${avg.toFixed(2)} (${relStr})`;
+        avgEl.className = `amen-hole-avg ${rel > 0.05 ? 'hs-over' : rel < -0.05 ? 'hs-under' : 'hs-even'}`;
+      }
+      if (distEl && live) {
+        const bPct = Math.round((live.birdies_or_better||0)*100);
+        const pPct = Math.round((live.pars||0)*100);
+        const bogPct = Math.round((live.bogeys_or_worse||0)*100);
+        distEl.innerHTML = `
+          <div class="amen-dist-row">
+            <span class="amen-dist-bird">${bPct}% bird</span>
+            <span class="amen-dist-par">${pPct}% par</span>
+            <span class="amen-dist-bog">${bogPct}% bogey+</span>
+          </div>`;
+      }
+      if (holeEl && live) {
+        const rel = live.avg_score - augustaHole.par;
+        holeEl.classList.remove('amen-hole-hard','amen-hole-easy');
+        holeEl.classList.add(rel > 0.1 ? 'amen-hole-hard' : rel < -0.1 ? 'amen-hole-easy' : '');
+      }
+    });
   }
 
   function renderSgLeaderboard() {
@@ -1057,6 +1334,7 @@
     document.getElementById(`view-${view}`).classList.add('active');
     document.querySelector(`.tab[data-view="${view}"]`).classList.add('active');
     if (view === 'submit') buildSubmitForm();
+    if (view === 'teams') { renderHeatmap(); renderOwnership(); }
     if (view === 'admin' && isAdmin) buildAdminEntries();
     if (view === 'course') {
       setTimeout(() => { renderHoleStats(); fetchDGData(); }, 50);
@@ -1833,10 +2111,180 @@ header h1 em {
 
 footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size:.78rem; font-family:'DM Mono',monospace; letter-spacing:.05em; }
 
+/* ── IN THE MONEY ── */
+.in-money { border-left:3px solid var(--gold); }
+.payout-live { color:#2ecc71; font-weight:600; }
+
+/* ── BIGGEST MOVERS ── */
+.movers-section {
+  margin-top:20px; padding:14px 18px;
+  background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08);
+  border-radius:12px;
+}
+.movers-title {
+  font-family:'Playfair Display',serif; font-size:.95rem;
+  color:var(--gold-lite); margin-bottom:10px;
+}
+.movers-body { display:flex; gap:8px; flex-wrap:wrap; }
+.mover-chip {
+  display:inline-flex; align-items:center; gap:5px;
+  padding:5px 12px; border-radius:20px;
+  font-family:'DM Mono',monospace; font-size:.78rem; font-weight:500;
+}
+.mover-up { background:rgba(39,174,96,.15); color:#27ae60; border:1px solid rgba(39,174,96,.3); }
+.mover-down { background:rgba(192,57,43,.12); color:var(--red); border:1px solid rgba(192,57,43,.25); }
+
+/* ── CUT TRACKER ── */
+.cut-tracker {
+  margin-top:20px; padding:14px 18px;
+  background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08);
+  border-radius:12px;
+}
+.cut-title {
+  font-family:'Playfair Display',serif; font-size:.95rem;
+  color:var(--gold-lite); margin-bottom:10px;
+}
+.cut-line-label {
+  font-family:'DM Mono',monospace; font-size:.8rem;
+  color:rgba(255,255,255,.5); margin-bottom:10px;
+}
+.cut-line-label strong { color:var(--gold-lite); }
+.cut-row {
+  display:flex; align-items:center; gap:8px;
+  padding:6px 10px; border-radius:6px; margin-bottom:4px;
+  font-size:.85rem; color:rgba(255,255,255,.7);
+}
+.cut-safe { border-left:3px solid #27ae60; }
+.cut-danger { border-left:3px solid var(--red); background:rgba(192,57,43,.06); }
+.cut-pool { font-weight:600; color:rgba(255,255,255,.9); }
+.cut-name { flex:1; }
+.cut-score { font-family:'DM Mono',monospace; font-weight:500; }
+.cut-thru { font-family:'DM Mono',monospace; font-size:.72rem; color:rgba(255,255,255,.35); min-width:28px; }
+.cut-pool-tag {
+  background:rgba(201,168,76,.2); color:var(--gold-lite);
+  font-family:'DM Mono',monospace; font-size:.58rem; font-weight:600;
+  padding:1px 6px; border-radius:8px; letter-spacing:.05em;
+}
+
+/* ── HEATMAP MATRIX ── */
+.heatmap-card {
+  background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08);
+  border-radius:14px; padding:20px 24px; margin-bottom:24px;
+}
+.heatmap-title {
+  font-family:'Playfair Display',serif; font-size:1.1rem;
+  color:var(--gold-lite); margin-bottom:4px;
+}
+.heatmap-subtitle {
+  font-family:'DM Mono',monospace; font-size:.72rem;
+  color:rgba(255,255,255,.35); margin-bottom:16px;
+}
+.heatmap-scroll { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+.hm-table { border-collapse:collapse; width:100%; min-width:500px; }
+.hm-table thead { position:sticky; top:0; z-index:2; }
+.hm-table th {
+  background:var(--green-dark); padding:8px 6px;
+  font-family:'DM Mono',monospace; font-size:.68rem;
+  letter-spacing:.06em; text-transform:uppercase;
+  color:rgba(201,168,76,.6); white-space:nowrap;
+  border-bottom:2px solid rgba(201,168,76,.2);
+}
+.hm-player-header { text-align:left; min-width:140px; }
+.hm-score-header { text-align:right; width:50px; }
+.hm-team-header { text-align:center; min-width:56px; }
+.hm-team-name { font-size:.62rem; line-height:1.2; max-width:56px; overflow:hidden; text-overflow:ellipsis; }
+.hm-team-score { font-size:.62rem; color:var(--gold-lite); margin-top:2px; }
+.hm-me { background:rgba(201,168,76,.15) !important; }
+.hm-table td { padding:5px 6px; border-bottom:1px solid rgba(255,255,255,.04); }
+.hm-player-cell {
+  display:flex; align-items:center; gap:4px;
+  font-size:.82rem; color:rgba(255,255,255,.75); white-space:nowrap;
+}
+.hm-player-name { overflow:hidden; text-overflow:ellipsis; max-width:130px; }
+.hm-score-cell {
+  font-family:'DM Mono',monospace; font-size:.78rem;
+  text-align:right; white-space:nowrap;
+}
+.hm-cell {
+  text-align:center; font-family:'DM Mono',monospace; font-size:.72rem;
+  font-weight:600; width:56px; min-width:56px; border-radius:3px;
+  transition:background .3s;
+}
+.hm-empty { background:transparent; }
+.hm-legend {
+  display:flex; align-items:center; gap:8px; margin-top:12px;
+  font-family:'DM Mono',monospace; font-size:.68rem; color:rgba(255,255,255,.35);
+}
+.hm-legend-bar {
+  width:100px; height:8px; border-radius:4px;
+  background:linear-gradient(to right, #3575ff, #f0f0f0, #ff5555);
+}
+.hm-legend-sep { opacity:.3; }
+
+/* ── AMEN CORNER CARD ── */
+.amen-card {
+  background:rgba(255,255,255,.04); border:1px solid rgba(201,168,76,.2);
+  border-radius:14px; padding:20px 24px; margin-bottom:20px;
+}
+.amen-card-title {
+  font-family:'Playfair Display',serif; font-size:1.05rem;
+  color:var(--gold-lite); margin-bottom:2px;
+}
+.amen-card-subtitle {
+  font-family:'Source Serif 4',serif; font-size:.8rem;
+  font-style:italic; color:rgba(255,255,255,.3); margin-bottom:16px;
+}
+.amen-card-holes { display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; }
+.amen-hole {
+  background:rgba(0,0,0,.2); border:1px solid rgba(255,255,255,.08);
+  border-radius:10px; padding:14px; text-align:center;
+  transition:border-color .3s;
+}
+.amen-hole-hard { border-color:rgba(192,57,43,.4); }
+.amen-hole-easy { border-color:rgba(39,174,96,.4); }
+.amen-hole-num {
+  font-family:'Playfair Display',serif; font-size:1.8rem; font-weight:900;
+  color:var(--gold); line-height:1; margin-bottom:4px;
+}
+.amen-hole-name {
+  font-family:'Playfair Display',serif; font-size:.85rem;
+  font-style:italic; color:rgba(255,255,255,.7); margin-bottom:2px;
+}
+.amen-hole-info {
+  font-family:'DM Mono',monospace; font-size:.68rem;
+  color:rgba(255,255,255,.3); margin-bottom:8px;
+}
+.amen-hole-avg {
+  font-family:'DM Mono',monospace; font-size:.9rem; font-weight:500;
+  color:rgba(255,255,255,.6); margin-bottom:6px;
+}
+.amen-dist-row {
+  display:flex; justify-content:center; gap:6px; flex-wrap:wrap;
+}
+.amen-dist-bird { color:#27ae60; font-family:'DM Mono',monospace; font-size:.65rem; }
+.amen-dist-par { color:rgba(255,255,255,.4); font-family:'DM Mono',monospace; font-size:.65rem; }
+.amen-dist-bog { color:var(--red); font-family:'DM Mono',monospace; font-size:.65rem; }
+
+/* ── SPARKLINE BARS (modal) ── */
+.spark-wrap {
+  position:relative; height:6px; margin-top:6px;
+  background:rgba(0,0,0,.06); border-radius:3px; overflow:hidden;
+}
+.spark-center {
+  position:absolute; left:50%; top:0; bottom:0; width:1px;
+  background:rgba(0,0,0,.15);
+}
+.spark-bar {
+  position:absolute; top:0; bottom:0;
+  border-radius:3px; transition:width .3s;
+}
+
 @media(max-width:600px) {
   .lb-header, .lb-row { grid-template-columns:44px 1fr 90px; }
   .lb-header span:last-child, .lb-row .payout-cell { display:none; }
   .players-grid { grid-template-columns:1fr 1fr; }
+  .amen-card-holes { grid-template-columns:1fr; }
+  .hm-player-name { max-width:90px; }
 }
 </style>
 </head>
@@ -1934,6 +2382,7 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
   <!-- TABS -->
   <div class="tabs">
     <button class="tab active" data-view="leaderboard" onclick="showView('leaderboard')">Leaderboard</button>
+    <button class="tab" data-view="teams" onclick="showView('teams')">Teams</button>
     <button class="tab" data-view="submit" onclick="showView('submit')">Submit Picks</button>
     <button class="tab" data-view="course" onclick="showView('course')">⛳ Course</button>
     <button class="tab" data-view="admin" onclick="showView('admin')">Admin</button>
@@ -1953,15 +2402,38 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
         <span>Place</span>
         <span>Participant</span>
         <span style="text-align:right">Score</span>
-        <span style="text-align:right">Win%</span>
+        <span style="text-align:right;font-size:.6rem">Strength</span>
         <span style="text-align:right">Payout</span>
       </div>
       <div id="lbBody"><div class="lb-empty">Waiting for entries…</div></div>
     </div>
 
-    <!-- OWNERSHIP -->
+    <!-- BIGGEST MOVERS -->
+    <div id="moversSection" class="movers-section" style="display:none">
+      <div class="movers-title">Biggest Movers</div>
+      <div id="moversBody" class="movers-body"></div>
+    </div>
+
+    <!-- CUT TRACKER -->
+    <div id="cutTracker" class="cut-tracker" style="display:none">
+      <div class="cut-title">Projected Cut Line</div>
+      <div id="cutBody" class="cut-body"></div>
+    </div>
+  </div>
+
+  <!-- ── TEAMS VIEW ── -->
+  <div id="view-teams" class="tab-panel">
+    <div class="heatmap-card">
+      <div class="heatmap-title">Roster Matrix</div>
+      <div class="heatmap-subtitle">Players sorted by score · colored by to-par performance</div>
+      <div class="heatmap-scroll" id="heatmapScroll">
+        <div id="heatmapBody"><p style="color:rgba(255,255,255,.35);font-size:.85rem;font-style:italic;padding:20px">Heatmap available once rosters are submitted.</p></div>
+      </div>
+    </div>
+
+    <!-- OWNERSHIP (moved from leaderboard) -->
     <div class="ownership-section">
-      <div class="own-title">📊 Player Ownership</div>
+      <div class="own-title">Player Ownership</div>
       <div id="ownershipBody"><p style="color:rgba(255,255,255,.35);font-size:.85rem;font-style:italic">Ownership visible after rosters unlock.</p></div>
     </div>
   </div>
@@ -2087,6 +2559,35 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
               </tr>
             </tfoot>
           </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Amen Corner Mini-Card -->
+    <div class="amen-card" id="amenCard">
+      <div class="amen-card-title">Amen Corner · Holes 11–12–13</div>
+      <div class="amen-card-subtitle">The most famous stretch in golf</div>
+      <div class="amen-card-holes" id="amenHoles">
+        <div class="amen-hole" id="amenHole11">
+          <div class="amen-hole-num">11</div>
+          <div class="amen-hole-name">White Dogwood</div>
+          <div class="amen-hole-info">Par 4 · 520 yds</div>
+          <div class="amen-hole-avg" id="amenAvg11">—</div>
+          <div class="amen-hole-dist" id="amenDist11"></div>
+        </div>
+        <div class="amen-hole" id="amenHole12">
+          <div class="amen-hole-num">12</div>
+          <div class="amen-hole-name">Golden Bell</div>
+          <div class="amen-hole-info">Par 3 · 155 yds</div>
+          <div class="amen-hole-avg" id="amenAvg12">—</div>
+          <div class="amen-hole-dist" id="amenDist12"></div>
+        </div>
+        <div class="amen-hole" id="amenHole13">
+          <div class="amen-hole-num">13</div>
+          <div class="amen-hole-name">Azalea</div>
+          <div class="amen-hole-info">Par 5 · 510 yds</div>
+          <div class="amen-hole-avg" id="amenAvg13">—</div>
+          <div class="amen-hole-dist" id="amenDist13"></div>
         </div>
       </div>
     </div>
