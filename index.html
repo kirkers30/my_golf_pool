@@ -218,7 +218,7 @@
   let dgProjections = {}; // {playerName: winProb} for projected finish ordering
   let lastDgScoreFetch = 0;
 
-  async function fetchDGScores(force = false) {
+  window.fetchDGScores = async function fetchDGScores(force = false) {
     const MIN_INTERVAL = 115000; // ~2 min
     if (!force && Date.now() - lastDgScoreFetch < MIN_INTERVAL) return;
     lastDgScoreFetch = Date.now();
@@ -298,7 +298,12 @@
       });
 
       if (Object.keys(newScores).length > 0) {
-        await set(ref(db, 'scores'), newScores);
+        // Sanitize keys for Firebase (no dots, #, $, /, [, ])
+      const sanitizedScores = {};
+      Object.entries(newScores).forEach(([k, v]) => {
+        sanitizedScores[k.replace(/[.#$\/\[\]]/g, '_')] = v;
+      });
+      await set(ref(db, 'scores'), sanitizedScores);
         dgProjections = newProj;
         const ts = new Date().toLocaleTimeString();
         updateEspnStatus(`✅ DataGolf · ${Object.keys(newScores).length} players · Updated ${ts}`);
@@ -337,7 +342,7 @@
 
     const entries = Object.entries(rosters).map(([, r]) => {
       // Sum top-5 win probabilities as a proxy for roster strength
-      const probs = r.picks.map(name => dgProjections[name] ?? 0)
+      const probs = r.picks.map(name => (dgProjections[name] ?? dgProjections[name.replace(/[.#$\/\[\]]/g, '_')] ?? 0))
                            .sort((a,b) => b - a).slice(0, CONFIG.topN);
       const totalWinProb = probs.reduce((s,v) => s+v, 0);
 
