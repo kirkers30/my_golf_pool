@@ -134,7 +134,9 @@
   function calcNetScore(roster, scoresObj) {
     const tourneyStarted = Object.keys(scoresObj).length > 0;
     const playerScores = roster.map(name => {
-      const s = scoresObj[name];
+      // Handle Firebase-sanitized keys (e.g. J.J. Spaun → J_J_ Spaun)
+      const key = name.replace(/[.#$\/\[\]]/g, '_');
+      const s = scoresObj[name] || scoresObj[key];
       if (!s || !tourneyStarted) return { name, total: 0, relative: 0, isCut: false, topar: 'E', thru: '' };
       const isCut = s.cut ?? false;
       const r1 = s.r1 ?? null;
@@ -142,9 +144,19 @@
       const r3 = isCut ? CONFIG.cutScore : (s.r3 ?? null);
       const r4 = isCut ? CONFIG.cutScore : (s.r4 ?? null);
       const rounds = [r1,r2,r3,r4].filter(r => r !== null);
-      const total = rounds.reduce((a,b) => a+b, 0);
-      const parPlayed = 72 * rounds.length;
-      const relative = rounds.length ? total - parPlayed : 0;
+      let total, relative;
+      if (rounds.length > 0) {
+        total = rounds.reduce((a,b) => a+b, 0);
+        const parPlayed = 72 * rounds.length;
+        relative = total - parPlayed;
+      } else if (typeof s.topar === 'number') {
+        // DG live data: use cumulative to-par directly
+        relative = s.topar;
+        total = s.topar;
+      } else {
+        total = 0;
+        relative = 0;
+      }
       return { name, total, relative, isCut, topar: s.topar ?? relative, thru: s.thru ?? '' };
     });
     const sorted = [...playerScores].sort((a,b) => a.relative - b.relative);
@@ -515,7 +527,8 @@
       const sc = fmtScore(p.relative);
       const cls = p.relative > 0 ? 'pos' : p.relative < 0 ? 'neg' : '';
       const grp = FIELD.find(f=>f.name===p.name)?.group || '';
-      const s = scores[p.name] || {};
+      const sKey = p.name.replace(/[.#$\/\[\]]/g, '_');
+      const s = scores[p.name] || scores[sKey] || {};
 
       // Round-by-round display
       const rounds = ['r1','r2','r3','r4'].map(r => {
@@ -855,12 +868,24 @@
     const totalRelEl = document.getElementById('totalRel');
 
     // Parse live hole data if available
-    // DG returns: { holes: [{hole_num, avg_score, birdies_or_better, pars, bogeys, ...}] }
+    // DG returns: { courses: [{ rounds: [{ round_num, holes: [{hole, par, total: {avg_score, birdies, pars, bogeys, ...}, ...}] }] }], current_round }
     const liveMap = {};
-    if (dgHoleData?.holes) {
-      dgHoleData.holes.forEach(h => { liveMap[h.hole_num] = h; });
+    const course = dgHoleData?.courses?.[0];
+    const currentRound = dgHoleData?.current_round;
+    const roundData = course?.rounds?.find(r => r.round_num === currentRound) || course?.rounds?.[0];
+    if (roundData?.holes) {
+      roundData.holes.forEach(h => {
+        const t = h.total || {};
+        const playersThru = t.players_thru || 0;
+        liveMap[h.hole] = {
+          avg_score: t.avg_score ?? h.par,
+          birdies_or_better: playersThru ? (t.eagles_or_better + t.birdies) / playersThru : 0,
+          pars: playersThru ? t.pars / playersThru : 0,
+          bogeys_or_worse: playersThru ? (t.bogeys + t.doubles_or_worse) / playersThru : 0,
+        };
+      });
       document.getElementById('holeStatsRound').textContent =
-        `Live · Round ${dgHoleData.round || ''} · ${dgHoleData.course || 'Augusta National'}`;
+        `Live · Round ${currentRound || ''} · ${dgHoleData.event_name || 'Augusta National'}`;
     } else {
       document.getElementById('holeStatsRound').textContent = 'Historical averages (2000–2025) · Live data loads during tournament';
     }
@@ -916,13 +941,17 @@
 
   function renderSgLeaderboard() {
     const el = document.getElementById('sgBody');
-    if (!dgSgData?.players?.length) {
+    // DG returns live_stats, not players
+    const players = dgSgData?.live_stats || dgSgData?.players;
+    if (!players?.length) {
       el.innerHTML = '<p class="course-placeholder">SG data loads when the tournament begins.</p>';
       return;
     }
+    // Normalize so downstream code can use .players
+    dgSgData.players = players;
 
     document.getElementById('sgRoundLabel').textContent =
-      `· Round ${dgSgData.round || 'event avg'}`;
+      `· ${dgSgData.stat_round === 'event_avg' ? 'Event Avg' : ('Round ' + (dgSgData.stat_round || ''))}`;
 
     showSgStat(currentSgStat, null);
   }
@@ -958,12 +987,12 @@
         const valClass = val > 0 ? 'sg-pos' : 'sg-neg';
         const barClass = val > 0 ? 'sg-bar-pos' : 'sg-bar-neg';
         // Highlight if in our pool field
-        const inPool = FIELD.some(f => f.name === p.player_name ||
-          f.name.split(' ').pop() === p.player_name.split(',')[0]);
+        const normalName = normalizeDgName(p.player_name);
+        const inPool = FIELD.some(f => f.name === normalName);
         return `
           <div class="sg-row ${inPool ? 'sg-pool-player' : ''}">
             <span class="sg-rank">${i+1}</span>
-            <span class="sg-name">${p.player_name}</span>
+            <span class="sg-name">${normalName}</span>
             <div class="sg-bar-wrap">
               <div class="sg-bar ${barClass}" style="width:${barPct}%"></div>
             </div>
