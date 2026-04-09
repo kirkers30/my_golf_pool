@@ -2239,6 +2239,7 @@ function showSgStat(s,b) { if(window._showSgStat) window._showSgStat(s,b); }
 function manualFetch() { if(window._manualFetch) window._manualFetch(); }
 function clearScores() { if(window._clearScores) window._clearScores(); }
 </script>
+<script>
 const _origBuildAdminEntries = window.buildAdminEntries;
 document.addEventListener('DOMContentLoaded', () => {
   const obs = new MutationObserver(() => {
