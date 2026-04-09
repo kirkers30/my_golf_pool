@@ -909,8 +909,8 @@
   window.showView = function(view) {
     origShowView(view);
     if (view === 'course') {
-      if (!dgHoleData) renderHoleStats(); // show historical immediately
-      fetchDGData(); // respects rate limit
+      renderHoleStats(); // always render immediately (historical or live)
+      fetchDGData();     // attempt live fetch (respects rate limit)
       dgInterval = dgInterval || setInterval(() => fetchDGData(), 300000);
     }
   };
@@ -928,13 +928,35 @@
     }
   };
 
+  window.viewMyPicks = function() {
+    const name = document.getElementById('submitterName').value.trim() || myName;
+    if (!name) return alert('Enter your name first to view your picks.');
+    const existing = Object.entries(rosters).find(([,r]) =>
+      r.name.toLowerCase() === name.toLowerCase()
+    );
+    if (!existing) {
+      alert(`No picks found for "${name}". Check your name spelling.`);
+      return;
+    }
+    const [, r] = existing;
+    const { netScore, playerScores, top5Names, tourneyStarted } = calcNetScore(r.picks, scores);
+    const entry = { ...r, netScore, playerScores, top5Names, tourneyStarted };
+    openRosterModal(JSON.stringify(entry));
+  };
+
   // ── REMEMBER ME ───────────────────────────────────────────────────────────
   window.rememberName = function() {
     const name = document.getElementById('submitterName').value.trim();
     if (name) {
       myName = name;
       localStorage.setItem('golfPoolName', name);
-      renderLeaderboard(); // re-render to highlight your row
+      renderLeaderboard();
+      // Show "View My Picks" button if this name has an entry
+      const hasEntry = Object.values(rosters).some(r =>
+        r.name.toLowerCase() === name.toLowerCase()
+      );
+      const btn = document.getElementById('viewPicksBtn');
+      if (btn) btn.style.display = hasEntry ? 'block' : 'none';
     }
   };
 
@@ -1060,6 +1082,14 @@
     if (myName) {
       const inp = document.getElementById('submitterName');
       if (inp) inp.value = myName;
+      // Show view button if remembered name has entry (check after rosters load)
+      setTimeout(() => {
+        const hasEntry = Object.values(rosters).some(r =>
+          r.name.toLowerCase() === myName.toLowerCase()
+        );
+        const btn = document.getElementById('viewPicksBtn');
+        if (btn && hasEntry) btn.style.display = 'block';
+      }, 1500);
     }
     document.getElementById('submitterName').addEventListener('input', () => {
       updatePickCount();
@@ -1807,6 +1837,9 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
     <div class="submit-card">
       <h2>Submit Your Picks</h2>
       <p>Pick 2 from Group A, 2 from Group B, and 3 from Group C. Your top 5 scores will count. Deadline: first tee shot Thursday.</p>
+      <div id="viewPicksBtn" style="display:none;margin-bottom:16px">
+        <button class="action-btn" onclick="viewMyPicks()">👁 View My Current Picks</button>
+      </div>
 
       <div class="name-row">
         <label>Your Name</label>
@@ -1840,7 +1873,10 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
         <h3 id="successMsg">You're in!</h3>
         <p>Your picks have been saved. Good luck at Augusta!</p>
         <p style="margin-top:12px;font-size:.85rem">Need to change your picks? You can edit them until rosters lock at the first tee time.</p>
-        <button class="action-btn" style="margin-top:16px" onclick="editPicks()">✏️ Edit My Picks</button>
+        <div style="display:flex;gap:10px;justify-content:center;margin-top:16px;flex-wrap:wrap">
+          <button class="action-btn" onclick="editPicks()">✏️ Edit My Picks</button>
+          <button class="action-btn" style="background:var(--green-dark)" onclick="viewMyPicks()">👁 View My Picks</button>
+        </div>
       </div>
     </div>
   </div>
