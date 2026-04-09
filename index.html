@@ -281,16 +281,12 @@
     espnFetchInterval = setInterval(fetchDGScores, 120000);
   }
 
-  function renderProjectedFinish() {} // no-op — using Win% column instead
   function updateEspnStatus(msg) {
     const el = document.getElementById('espnStatus');
     if (el) el.textContent = msg;
   }
 
-  function startEspnPolling() {
-    fetchDGScores();
-    espnFetchInterval = setInterval(fetchDGScores, 120000); // 2 min auto-refresh
-  }
+
 
   // ── PROJECTED POOL FINISH ─────────────────────────────────────────────────
   // Uses DG win probability to rank projected pool finish.
