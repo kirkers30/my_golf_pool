@@ -1077,33 +1077,38 @@
     }
     lastDgFetch = Date.now();
     document.getElementById('dgStatus').textContent = '⏳ Fetching live data from DataGolf…';
+    const statusParts = [];
+
+    // Fetch hole stats and SG data independently so one failure doesn't block the other
     try {
-      // Fetch hole stats and SG data in parallel
-      const [holeRes, sgRes] = await Promise.all([
-        fetch(CORS + encodeURIComponent(
-          `https://feeds.datagolf.com/preds/live-hole-stats?tour=pga&file_format=json&key=${DG_KEY}`
-        )),
-        fetch(CORS + encodeURIComponent(
-          `https://feeds.datagolf.com/preds/live-tournament-stats?stats=sg_total,sg_ott,sg_app,sg_arg,sg_putt&round=event_avg&display=value&file_format=json&key=${DG_KEY}`
-        )),
-      ]);
-
-      const holeJson = await holeRes.json();
-      const sgJson   = await sgRes.json();
-
-      dgHoleData = holeJson;
-      dgSgData   = sgJson;
-
-      const ts = new Date().toLocaleTimeString();
-      document.getElementById('dgStatus').textContent = `✅ Live DataGolf data · Updated ${ts} · Refreshes every 5 min`;
-
-      renderHoleStats();
-      renderSgLeaderboard();
-
+      const holeRes = await fetch(CORS + encodeURIComponent(
+        `https://feeds.datagolf.com/preds/live-hole-stats?tour=pga&file_format=json&key=${DG_KEY}`
+      ));
+      dgHoleData = await holeRes.json();
+      statusParts.push('holes');
     } catch(err) {
-      console.error('DG fetch error:', err);
+      console.error('DG hole-stats error:', err);
+    }
+    renderHoleStats();
+
+    try {
+      const sgRes = await fetch(CORS + encodeURIComponent(
+        `https://feeds.datagolf.com/preds/live-tournament-stats?stats=sg_total,sg_ott,sg_app,sg_arg,sg_putt&round=event_avg&display=value&file_format=json&key=${DG_KEY}`
+      ));
+      dgSgData = await sgRes.json();
+      statusParts.push('SG');
+    } catch(err) {
+      console.error('DG SG-stats error:', err);
+    }
+    renderSgLeaderboard();
+
+    const ts = new Date().toLocaleTimeString();
+    if (statusParts.length === 2) {
+      document.getElementById('dgStatus').textContent = `✅ Live DataGolf data · Updated ${ts} · Refreshes every 5 min`;
+    } else if (statusParts.length === 1) {
+      document.getElementById('dgStatus').textContent = `⚠️ Partial data (${statusParts[0]}) · ${ts}`;
+    } else {
       document.getElementById('dgStatus').textContent = '⚠️ Could not reach DataGolf — showing historical averages';
-      renderHoleStats(); // fall back to historical
     }
   }
 
@@ -2158,7 +2163,10 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
 .cut-danger { border-left:3px solid var(--red); background:rgba(192,57,43,.06); }
 .cut-pool { font-weight:600; color:rgba(255,255,255,.9); }
 .cut-name { flex:1; }
-.cut-score { font-family:'DM Mono',monospace; font-weight:500; }
+.cut-score { font-family:'DM Mono',monospace; font-weight:500; min-width:36px; text-align:right; }
+.cut-score.neg { color:#4cdf8b; }
+.cut-score.pos { color:#ff6b6b; }
+.cut-thru { min-width:32px; text-align:right; }
 .cut-thru { font-family:'DM Mono',monospace; font-size:.72rem; color:rgba(255,255,255,.35); min-width:28px; }
 .cut-pool-tag {
   background:rgba(201,168,76,.2); color:var(--gold-lite);
@@ -2205,6 +2213,8 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
   font-family:'DM Mono',monospace; font-size:.78rem;
   text-align:right; white-space:nowrap;
 }
+.hm-score-cell .neg { color:#4cdf8b; }
+.hm-score-cell .pos { color:#ff6b6b; }
 .hm-cell {
   text-align:center; font-family:'DM Mono',monospace; font-size:.72rem;
   font-weight:600; width:56px; min-width:56px; border-radius:3px;
