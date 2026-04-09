@@ -391,8 +391,8 @@
   }
 
   // ── LIVE FIREBASE DATA ────────────────────────────────────────────────────
-  onValue(ref(db, 'scores'),  snap => { scores  = snap.val() || {}; renderLeaderboard(); renderProjectedFinish(); });
-  onValue(ref(db, 'rosters'), snap => { rosters = snap.val() || {}; renderLeaderboard(); renderProjectedFinish(); });
+  onValue(ref(db, 'scores'),  snap => { scores  = snap.val() || {}; renderLeaderboard(); });
+  onValue(ref(db, 'rosters'), snap => { rosters = snap.val() || {}; renderLeaderboard(); });
   onValue(ref(db, 'config/locked'), snap => {
     CONFIG.locked = snap.val() || false;
     document.getElementById('lockStatus').textContent = CONFIG.locked ? '🔒 Rosters Locked' : '🔓 Rosters Open';
@@ -468,6 +468,16 @@
       const clickable = !hideRosters;
       const isMe = myName && e.name.toLowerCase() === myName.toLowerCase();
 
+      // Win probability — sum of top 5 players' win probs
+      const winProbs = e.picks ? e.picks.map(name => {
+        const key = name.replace(/[.#$\/\[\]]/g, '_');
+        return dgProjections[name] ?? dgProjections[key] ?? 0;
+      }) : [];
+      const top5WinProb = [...winProbs].sort((a,b)=>b-a).slice(0,5).reduce((s,v)=>s+v,0);
+      const winProbDisplay = Object.keys(dgProjections).length
+        ? `${(top5WinProb*100).toFixed(1)}%`
+        : '—';
+
       // Movement arrow
       let arrow = '';
       if (prevRankings[e.name] !== undefined) {
@@ -489,6 +499,7 @@
             ${hideRosters ? '<span class="hidden-tag">picks hidden</span>' : ''}
           </div>
           <div class="score-cell ${scoreClass}">${scoreDisplay}</div>
+          <div class="score-cell" style="font-family:'DM Mono',monospace;font-size:.8rem;color:rgba(0,0,0,.5);text-align:right">${winProbDisplay}</div>
           <div class="payout-cell">
             ${arrow}
             ${payout ? `<span class="payout-amt">$${payout}</span>` : '<span class="payout-dash">—</span>'}
@@ -1009,8 +1020,11 @@
   window.showView = function(view) {
     origShowView(view);
     if (view === 'course') {
-      renderHoleStats(); // always render immediately (historical or live)
-      fetchDGData();     // attempt live fetch (respects rate limit)
+      // Small timeout ensures DOM is visible before rendering
+      setTimeout(() => {
+        renderHoleStats();
+        fetchDGData();
+      }, 50);
       dgInterval = dgInterval || setInterval(() => fetchDGData(), 300000);
     }
   };
@@ -1179,6 +1193,7 @@
   window.addEventListener('DOMContentLoaded', () => {
     renderLeaderboard();
     buildSubmitForm();
+    renderHoleStats(); // pre-render historical stats
     if (myName) {
       const inp = document.getElementById('submitterName');
       if (inp) inp.value = myName;
@@ -1334,10 +1349,10 @@ header h1 em {
 
 /* ── LEADERBOARD ── */
 .lb-card { background:var(--cream); border-radius:14px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,.4); }
-.lb-header { background:var(--green-dark); display:grid; grid-template-columns:52px 1fr 110px 90px; padding:13px 20px; gap:8px; }
+.lb-header { background:var(--green-dark); display:grid; grid-template-columns:52px 1fr 90px 80px 80px; padding:13px 20px; gap:8px; }
 .lb-header span { font-family:'DM Mono',monospace; font-size:.7rem; letter-spacing:.12em; text-transform:uppercase; color:rgba(201,168,76,.65); }
 .lb-row {
-  display:grid; grid-template-columns:52px 1fr 110px 90px; padding:0 20px; gap:8px;
+  display:grid; grid-template-columns:52px 1fr 90px 80px 80px; padding:0 20px; gap:8px;
   align-items:center; min-height:54px; border-bottom:1px solid rgba(0,0,0,.06);
   cursor:pointer; transition:background .15s;
 }
@@ -1956,7 +1971,8 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
       <div class="lb-header">
         <span>Place</span>
         <span>Participant</span>
-        <span style="text-align:right">Net Score</span>
+        <span style="text-align:right">Score</span>
+        <span style="text-align:right">Win%</span>
         <span style="text-align:right">Payout</span>
       </div>
       <div id="lbBody"><div class="lb-empty">Waiting for entries…</div></div>
@@ -1967,22 +1983,6 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
       <div class="own-title">📊 Player Ownership</div>
       <div id="ownershipBody"><p style="color:rgba(255,255,255,.35);font-size:.85rem;font-style:italic">Ownership visible after rosters unlock.</p></div>
     </div>
-    <!-- PROJECTED FINISH -->
-    <div class="ownership-section" style="margin-top:28px">
-      <div class="own-title">🔮 Projected Pool Finish <span style="font-size:.75rem;font-weight:400;opacity:.5;font-family:'DM Mono',monospace">· DataGolf live model</span></div>
-      <p style="font-size:.78rem;color:rgba(255,255,255,.35);font-family:'DM Mono',monospace;margin-bottom:14px">Based on each player's projected 72-hole score. Updates every 2 minutes.</p>
-      <div class="lb-card" style="margin-top:0">
-        <div class="lb-header">
-          <span>Place</span>
-          <span>Participant</span>
-          <span style="text-align:right">Proj Score</span>
-          <span style="text-align:right">Proj Payout</span>
-        </div>
-        <div id="projBody"><p class="proj-placeholder">Projected finish available once tournament begins.</p></div>
-      </div>
-    </div>
-
-  </div>
 
   <!-- ── SUBMIT VIEW ── -->
   <div id="view-submit" class="tab-panel">
