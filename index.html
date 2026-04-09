@@ -170,18 +170,29 @@
   let myName = localStorage.getItem('golfPoolName') || ''; // remember me
 
   // ── COUNTDOWN TIMER ───────────────────────────────────────────────────────
-  const TEE_TIME = new Date('2026-04-10T12:00:00Z'); // Thursday ~8am ET = 12:00 UTC
+  const TEE_TIME = new Date('2026-04-10T11:40:00Z'); // 7:40am ET = 11:40 UTC
   function updateCountdown() {
     const el = document.getElementById('countdown');
     if (!el) return;
     const now = Date.now();
     const diff = TEE_TIME - now;
-    if (diff <= 0) { el.textContent = '🏌️ Tournament is LIVE!'; return; }
+    if (diff <= 0) { el.innerHTML = '<span class="cd-live">🏌️ Tournament is LIVE!</span>'; return; }
     const d = Math.floor(diff / 86400000);
     const h = Math.floor((diff % 86400000) / 3600000);
     const m = Math.floor((diff % 3600000) / 60000);
     const s = Math.floor((diff % 60000) / 1000);
-    el.innerHTML = `⏱ <strong>${d}d ${h}h ${m}m ${s}s</strong> until first tee shot`;
+    el.innerHTML = `
+      <div class="cd-label">First tee shot · Thursday 7:40am ET</div>
+      <div class="cd-blocks">
+        <div class="cd-block"><span class="cd-num">${d}</span><span class="cd-unit">days</span></div>
+        <div class="cd-sep">:</div>
+        <div class="cd-block"><span class="cd-num">${String(h).padStart(2,'0')}</span><span class="cd-unit">hrs</span></div>
+        <div class="cd-sep">:</div>
+        <div class="cd-block"><span class="cd-num">${String(m).padStart(2,'0')}</span><span class="cd-unit">min</span></div>
+        <div class="cd-sep">:</div>
+        <div class="cd-block"><span class="cd-num">${String(s).padStart(2,'0')}</span><span class="cd-unit">sec</span></div>
+      </div>
+    `;
   }
   setInterval(updateCountdown, 1000);
   updateCountdown();
@@ -1151,6 +1162,14 @@ header h1 em {
 }
 .meta-pill strong { color:#fff; }
 #lockStatus { font-family:'DM Mono',monospace; font-size:.8rem; color:var(--gold-lite); margin-top:10px; }
+#countdown { margin-top:16px; }
+.cd-label { font-family:'DM Mono',monospace; font-size:.75rem; letter-spacing:.08em; text-transform:uppercase; color:rgba(255,255,255,.4); margin-bottom:10px; }
+.cd-blocks { display:flex; align-items:center; justify-content:center; gap:6px; }
+.cd-block { display:flex; flex-direction:column; align-items:center; background:rgba(0,0,0,.25); border:1px solid rgba(201,168,76,.2); border-radius:8px; padding:8px 14px; min-width:60px; }
+.cd-num { font-family:'DM Mono',monospace; font-size:1.8rem; font-weight:500; color:var(--gold); line-height:1; }
+.cd-unit { font-family:'DM Mono',monospace; font-size:.6rem; letter-spacing:.1em; text-transform:uppercase; color:rgba(255,255,255,.35); margin-top:3px; }
+.cd-sep { font-family:'DM Mono',monospace; font-size:1.4rem; color:rgba(201,168,76,.4); margin-bottom:12px; }
+.cd-live { font-family:'Playfair Display',serif; font-size:1.3rem; color:var(--gold); font-style:italic; animation:shimmer 2s ease-in-out infinite; }
 
 /* ── TABS ── */
 .rules-card {
