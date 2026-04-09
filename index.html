@@ -218,7 +218,7 @@
   let dgProjections = {}; // {playerName: winProb} for projected finish ordering
   let lastDgScoreFetch = 0;
 
-  window.fetchDGScores = async function fetchDGScores(force = false) {
+  window._fetchDGScores = window.fetchDGScores = async function fetchDGScores(force = false) {
     const MIN_INTERVAL = 115000; // ~2 min
     if (!force && Date.now() - lastDgScoreFetch < MIN_INTERVAL) return;
     lastDgScoreFetch = Date.now();
@@ -540,7 +540,7 @@
   }
 
   // ── ROSTER MODAL ──────────────────────────────────────────────────────────
-  window.openRosterModal = function(jsonStr) {
+  window._openRosterModal = window.openRosterModal = function(jsonStr) {
     const e = JSON.parse(jsonStr);
     document.getElementById('modalName').textContent = e.name;
     const netDisplay = fmtScore(e.netScore);
@@ -586,12 +586,12 @@
     document.getElementById('modalBackdrop').classList.add('open');
   };
 
-  window.closeModal = function(e) {
+  window._closeModal = window.closeModal = function(e) {
     if (!e || e.target === document.getElementById('modalBackdrop'))
       document.getElementById('modalBackdrop').classList.remove('open');
   };
 
-  window.closeModalDirect = function() {
+  window._closeModalDirect = window.closeModalDirect = function() {
     document.getElementById('modalBackdrop').classList.remove('open');
   };
 
@@ -614,7 +614,7 @@
     });
   }
 
-  window.enforceLimit = function(grp, limit) {
+  window._enforceLimit = window.enforceLimit = function(grp, limit) {
     const boxes = document.querySelectorAll(`input[name="grp${grp}"]`);
     const checked = [...boxes].filter(b => b.checked);
     if (checked.length >= limit) {
@@ -625,7 +625,7 @@
     updatePickCount();
   };
 
-  window.updatePickCount = function() {
+  window._updatePickCount = window.updatePickCount = function() {
     let total = 0;
     ['A','B','C'].forEach(grp => {
       const cnt = document.querySelectorAll(`input[name="grp${grp}"]:checked`).length;
@@ -638,7 +638,7 @@
     document.getElementById('submitBtn').disabled = !ready;
   };
 
-  window.submitRoster = async function() {
+  window._submitRoster = window.submitRoster = async function() {
     const name = document.getElementById('submitterName').value.trim();
     if (!name) return alert('Enter your name!');
 
@@ -679,7 +679,7 @@
     }
   };
 
-  window.editPicks = function() {
+  window._editPicks = window.editPicks = function() {
     document.getElementById('submitSuccess').style.display = 'none';
     document.getElementById('submitForm').style.display = 'block';
     document.getElementById('submitBtn').disabled = false;
@@ -698,7 +698,7 @@
     }
   };
 
-  window.adminLogin = function() {
+  window._adminLogin = window.adminLogin = function() {
     const pw = document.getElementById('adminPw').value;
     if (pw === CONFIG.adminPassword) {
       isAdmin = true;
@@ -713,7 +713,7 @@
     }
   };
 
-  window.updatePayouts = function() {
+  window._updatePayouts = window.updatePayouts = function() {
     const p1 = parseFloat(document.getElementById('pct1').value) || 0;
     const p2 = parseFloat(document.getElementById('pct2').value) || 0;
     const p3 = parseFloat(document.getElementById('pct3').value) || 0;
@@ -727,41 +727,41 @@
     }
   };
 
-  window.toggleLock = async function() {
+  window._toggleLock = window.toggleLock = async function() {
     const newLocked = !CONFIG.locked;
     await set(ref(db, 'config/locked'), newLocked);
     alert(newLocked ? 'Rosters are now LOCKED 🔒' : 'Rosters are now OPEN 🔓');
   };
 
-  window.toggleHideRosters = async function() {
+  window._toggleHideRosters = window.toggleHideRosters = async function() {
     const newHidden = !rostersHidden;
     await set(ref(db, 'config/rostersHidden'), newHidden);
   };
 
-  window.toggleEspn = async function() {
+  window._toggleEspn = window.toggleEspn = async function() {
     const enabled = document.getElementById('espnToggle').checked;
     await set(ref(db, 'config/espnEnabled'), enabled);
   };
 
-  window.manualFetch = async function() {
+  window._manualFetch = window.manualFetch = async function() {
     updateEspnStatus('Fetching…');
     lastDgScoreFetch = 0;
     await fetchDGScores(true);
   };
 
-  window.clearScores = async function() {
+  window._clearScores = window.clearScores = async function() {
     if (!confirm('Clear ALL scores from Firebase? Only do this to reset.')) return;
     await set(ref(db, 'scores'), null);
     updateEspnStatus('Scores cleared.');
   };
 
-  window.deleteEntry = async function(key) {
+  window._deleteEntry = window.deleteEntry = async function(key) {
     if (!confirm('Delete this entry?')) return;
     await remove(ref(db, `rosters/${key}`));
     buildAdminEntries();
   };
 
-  window.togglePaid = async function(key, checked) {
+  window._togglePaid = window.togglePaid = async function(key, checked) {
     await set(ref(db, `rosters/${key}/paid`), checked);
   };
 
@@ -967,7 +967,7 @@
     showSgStat(currentSgStat, null);
   }
 
-  window.showSgStat = function(stat, btn) {
+  window._showSgStat = window.showSgStat = function(stat, btn) {
     currentSgStat = stat;
     // Update tab highlight
     document.querySelectorAll('.sg-tab').forEach(t => t.classList.remove('active'));
@@ -1016,19 +1016,7 @@
 
   // Auto-fetch DG data every 5 minutes when course tab is active
   let dgInterval = null;
-  const origShowView = window.showView;
-  window.showView = function(view) {
-    origShowView(view);
-    if (view === 'course') {
-      // Small timeout ensures DOM is visible before rendering
-      setTimeout(() => {
-        renderHoleStats();
-        fetchDGData();
-      }, 50);
-      dgInterval = dgInterval || setInterval(() => fetchDGData(), 300000);
-    }
-  };
-  window.sharePool = function() {
+  window._sharePool = window.sharePool = function() {
     const url = window.location.href.split('#')[0];
     if (navigator.share) {
       navigator.share({ title: '2026 Masters Pool', text: "Join our Masters pool — submit your picks!", url });
@@ -1042,7 +1030,7 @@
     }
   };
 
-  window.viewMyPicks = function() {
+  window._viewMyPicks = window.viewMyPicks = function() {
     const name = document.getElementById('submitterName').value.trim() || myName;
     if (!name) return alert('Enter your name first to view your picks.');
     const existing = Object.entries(rosters).find(([,r]) =>
@@ -1059,7 +1047,7 @@
   };
 
   // ── REMEMBER ME ───────────────────────────────────────────────────────────
-  window.rememberName = function() {
+  window._rememberName = window.rememberName = function() {
     const name = document.getElementById('submitterName').value.trim();
     if (name) {
       myName = name;
@@ -1074,13 +1062,17 @@
     }
   };
 
-  window.showView = function(view) {
+  window._showView = window.showView = function(view) {
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.getElementById(`view-${view}`).classList.add('active');
     document.querySelector(`.tab[data-view="${view}"]`).classList.add('active');
     if (view === 'submit') buildSubmitForm();
     if (view === 'admin' && isAdmin) buildAdminEntries();
+    if (view === 'course') {
+      setTimeout(() => { renderHoleStats(); fetchDGData(); }, 50);
+      dgInterval = dgInterval || setInterval(() => fetchDGData(), 300000);
+    }
   };
 
   // ── HOLE INFO TOOLTIPS ────────────────────────────────────────────────────
@@ -2222,7 +2214,31 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
 <footer>2026 Masters Pool · Augusta National · Live scoring updates during the tournament</footer>
 
 <script>
-// Also update entryCount in admin panel when rosters change
+// Global bridge — module scripts assign to window.X but onclick attributes
+// need these available synchronously. This proxy waits for the module to load.
+function showView(v) { if(window._showView) window._showView(v); }
+function adminLogin() { if(window._adminLogin) window._adminLogin(); }
+function toggleLock() { if(window._toggleLock) window._toggleLock(); }
+function toggleHideRosters() { if(window._toggleHideRosters) window._toggleHideRosters(); }
+function toggleEspn() { if(window._toggleEspn) window._toggleEspn(); }
+function toggleEspn() { if(window._toggleEspn) window._toggleEspn(); }
+function enforceLimit(g,l) { if(window._enforceLimit) window._enforceLimit(g,l); }
+function updatePickCount() { if(window._updatePickCount) window._updatePickCount(); }
+function submitRoster() { if(window._submitRoster) window._submitRoster(); }
+function editPicks() { if(window._editPicks) window._editPicks(); }
+function viewMyPicks() { if(window._viewMyPicks) window._viewMyPicks(); }
+function openRosterModal(j) { if(window._openRosterModal) window._openRosterModal(j); }
+function closeModal(e) { if(window._closeModal) window._closeModal(e); }
+function closeModalDirect() { if(window._closeModalDirect) window._closeModalDirect(); }
+function sharePool() { if(window._sharePool) window._sharePool(); }
+function rememberName() { if(window._rememberName) window._rememberName(); }
+function deleteEntry(k) { if(window._deleteEntry) window._deleteEntry(k); }
+function togglePaid(k,c) { if(window._togglePaid) window._togglePaid(k,c); }
+function updatePayouts() { if(window._updatePayouts) window._updatePayouts(); }
+function showSgStat(s,b) { if(window._showSgStat) window._showSgStat(s,b); }
+function manualFetch() { if(window._manualFetch) window._manualFetch(); }
+function clearScores() { if(window._clearScores) window._clearScores(); }
+</script>
 const _origBuildAdminEntries = window.buildAdminEntries;
 document.addEventListener('DOMContentLoaded', () => {
   const obs = new MutationObserver(() => {
