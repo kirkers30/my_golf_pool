@@ -170,7 +170,7 @@
   let myName = localStorage.getItem('golfPoolName') || ''; // remember me
 
   // ── COUNTDOWN TIMER ───────────────────────────────────────────────────────
-  const TEE_TIME = new Date('2026-04-10T11:40:00Z'); // 7:40am ET = 11:40 UTC
+  const TEE_TIME = new Date(Date.UTC(2026, 3, 9, 11, 40, 0)); // April 9 7:40am ET (UTC-4)
   function updateCountdown() {
     const el = document.getElementById('countdown');
     if (!el) return;
@@ -182,7 +182,7 @@
     const m = Math.floor((diff % 3600000) / 60000);
     const s = Math.floor((diff % 60000) / 1000);
     el.innerHTML = `
-      <div class="cd-label">First tee shot · Thursday 7:40am ET</div>
+      <div class="cd-label">First tee shot · Thursday April 9 · 7:40am ET</div>
       <div class="cd-blocks">
         <div class="cd-block"><span class="cd-num">${d}</span><span class="cd-unit">days</span></div>
         <div class="cd-sep">:</div>
@@ -1762,7 +1762,7 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
       <span style="font-size:26px">⛳</span>
       <div class="flag-line"></div>
     </div>
-    <h1>Masters Pool 2026<em>Augusta National · April 10–13</em></h1>
+    <h1>Masters Pool 2026<em>Augusta National · April 9–13</em></h1>
     <div class="header-meta">
       <div class="meta-pill">Participants: <strong id="participantCount">—</strong></div>
       <div class="meta-pill">Pool: <strong id="poolTotal">—</strong></div>
