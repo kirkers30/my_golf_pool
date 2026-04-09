@@ -197,8 +197,8 @@
   setInterval(updateCountdown, 1000);
   updateCountdown();
 
-  // ── DATAGOLF LIVE SCORING ────────────────────────────────────────────────
-  // DG uses "Last, First" name format per API docs
+  // ── NAME HELPERS ──────────────────────────────────────────────────────────
+  // DG uses "Last, First" format
   function normalizeDgName(raw) {
     if (!raw) return '';
     let name = raw.trim();
@@ -206,49 +206,38 @@
       const parts = name.split(',');
       name = parts[1].trim() + ' ' + parts[0].trim();
     }
-    // Handle any remaining accent differences
-    const MAP = {
-      'Ludvig Aberg': 'Ludvig Aberg',
-      'Nicolai Hojgaard': 'Nicolai Hojgaard',
-      'Rasmus Hojgaard': 'Rasmus Hojgaard',
-    };
-    return MAP[name] || name;
+    return name;
   }
 
-  let dgProjections = {}; // {playerName: winProb} for projected finish ordering
+  // Safe score lookup — handles Firebase-sanitized keys (J.J. Spaun → J_J_ Spaun)
+  function safeScoreLookup(name) {
+    return scores[name] || scores[name.replace(/[.#$\/\[\]]/g, '_')] || null;
+  }
+
+  let dgProjections = {};
   let lastDgScoreFetch = 0;
 
+  // ── DATAGOLF: LIVE SCORES + WIN PROBABILITIES ─────────────────────────────
+  // /preds/in-play gives: current_score (cumulative to par), today, thru, round, win prob
+  // That's all we need — no individual round scores required for pool scoring
   window._fetchDGScores = window.fetchDGScores = async function fetchDGScores(force = false) {
-    const MIN_INTERVAL = 115000; // ~2 min
-    if (!force && Date.now() - lastDgScoreFetch < MIN_INTERVAL) return;
+    const MIN = 115000; // 2 min
+    if (!force && Date.now() - lastDgScoreFetch < MIN) return;
     lastDgScoreFetch = Date.now();
     const CORS = 'https://corsproxy.io/?';
 
     try {
-      // in-play: current_score, current_pos, today, thru, round, win prob
-      // live-stats: player_name (Last,First), total (cumulative to par), thru
-      const [inPlayRes, statsRes] = await Promise.all([
-        fetch(CORS + encodeURIComponent(
-          `https://feeds.datagolf.com/preds/in-play?tour=pga&odds_format=percent&file_format=json&key=${DG_KEY}`
-        )),
-        fetch(CORS + encodeURIComponent(
-          `https://feeds.datagolf.com/preds/live-tournament-stats?stats=sg_total&round=event_cumulative&display=value&file_format=json&key=${DG_KEY}`
-        )),
-      ]);
+      const res = await fetch(CORS + encodeURIComponent(
+        `https://feeds.datagolf.com/preds/in-play?tour=pga&odds_format=percent&file_format=json&key=${DG_KEY}`
+      ));
+      const inPlay = await res.json();
+      const ts = new Date().toLocaleTimeString();
 
-      const inPlay = await inPlayRes.json();
-      const stats  = await statsRes.json();
-
-      if (!inPlay?.data?.length) {
-        updateEspnStatus('⚠️ DG: tournament not yet in play');
+      // Pre-tournament: data array is empty — store nothing, don't error
+      if (!Array.isArray(inPlay?.data) || !inPlay.data.length) {
+        updateEspnStatus(`⏳ Tournament not yet live · DG checked ${ts}`);
         return;
       }
-
-      // Build lookup from live-stats for sg_total
-      const statsByName = {};
-      (stats?.live_stats || []).forEach(p => {
-        statsByName[normalizeDgName(p.player_name)] = p;
-      });
 
       const newScores = {};
       const newProj   = {};
@@ -258,66 +247,41 @@
         if (!FIELD.some(f => f.name === name)) return;
 
         const isCut = ['CUT','WD','DQ','MDF'].includes(String(p.current_pos).toUpperCase());
-        const currentScore = typeof p.current_score === 'number' ? p.current_score : 0;
-        const thruRaw = p.thru;
-        const round   = p.round || 1;
-        const today   = typeof p.today === 'number' ? p.today : 0;
+        const topar = typeof p.current_score === 'number' ? p.current_score : 0;
+        const thru  = p.thru === 18 || p.thru === 'F' ? 'F' : (p.thru || '');
 
-        const entry = {
-          cut:   isCut,
-          topar: currentScore,
-          thru:  thruRaw === 18 || thruRaw === 'F' ? 'F' : (thruRaw || ''),
-          round,
-        };
-
-        // Reconstruct round strokes from cumulative score + today
-        // current_score = cumulative score to par through all holes played today + prior rounds
-        if (thruRaw === 18 || thruRaw === 'F') {
-          // Completed today's round
-          const todayStrokes = 72 + today;
-          const priorStrokes = 72 * (round - 1) + (currentScore - today); // prior rounds total
-          if (round === 1) { entry.r1 = todayStrokes; }
-          if (round === 2) { entry.r1 = priorStrokes - 72; entry.r2 = todayStrokes; }
-          if (round === 3) { entry.r3 = isCut ? CONFIG.cutScore : todayStrokes; }
-          if (round === 4) { entry.r4 = isCut ? CONFIG.cutScore : todayStrokes; }
-        } else {
-          // Mid-round — just store cumulative, pool scoring will use topar
-          if (round >= 2) entry.r1 = 72 + (currentScore - today);
-        }
-
+        const entry = { cut: isCut, topar, thru };
         if (isCut) { entry.r3 = CONFIG.cutScore; entry.r4 = CONFIG.cutScore; }
 
-        // Attach sg_total if available
-        const st = statsByName[name];
-        if (st?.sg_total != null) entry.sg_total = st.sg_total;
+        // Firebase key — sanitize dots etc
+        const key = name.replace(/[.#$\/\[\]]/g, '_');
+        newScores[key] = entry;
 
-        // Win probability drives projected finish
+        // Win probability for Win% column
         if (typeof p.win === 'number') newProj[name] = p.win;
-
-        newScores[name] = entry;
       });
 
       if (Object.keys(newScores).length > 0) {
-        // Sanitize keys for Firebase (no dots, #, $, /, [, ])
-      const sanitizedScores = {};
-      Object.entries(newScores).forEach(([k, v]) => {
-        sanitizedScores[k.replace(/[.#$\/\[\]]/g, '_')] = v;
-      });
-      await set(ref(db, 'scores'), sanitizedScores);
+        await set(ref(db, 'scores'), newScores);
         dgProjections = newProj;
-        const ts = new Date().toLocaleTimeString();
-        updateEspnStatus(`✅ DataGolf · ${Object.keys(newScores).length} players · Updated ${ts}`);
+        updateEspnStatus(`✅ DataGolf · ${Object.keys(newScores).length} players · ${ts}`);
         renderProjectedFinish();
       } else {
-        updateEspnStatus('⚠️ DG: 0 matching players — may not have started');
+        updateEspnStatus(`⏳ DG: no matching players yet · ${ts}`);
       }
 
     } catch(err) {
-      console.error('DG scoring error:', err);
-      updateEspnStatus('⚠️ DG fetch failed — see console');
+      console.error('DG fetch error:', err);
+      updateEspnStatus('⚠️ DG fetch failed — ' + err.message);
     }
+  };
+
+  function startEspnPolling() {
+    fetchDGScores();
+    espnFetchInterval = setInterval(fetchDGScores, 120000);
   }
 
+  function renderProjectedFinish() {} // no-op — using Win% column instead
   function updateEspnStatus(msg) {
     const el = document.getElementById('espnStatus');
     if (el) el.textContent = msg;
@@ -471,7 +435,7 @@
       // Win probability — sum of top 5 players' win probs
       const winProbs = e.picks ? e.picks.map(name => {
         const key = name.replace(/[.#$\/\[\]]/g, '_');
-        return dgProjections[name] ?? dgProjections[key] ?? 0;
+        return dgProjections[name] ?? dgProjections[key] ?? dgProjections[normalizeDgName(name)] ?? 0;
       }) : [];
       const top5WinProb = [...winProbs].sort((a,b)=>b-a).slice(0,5).reduce((s,v)=>s+v,0);
       const winProbDisplay = Object.keys(dgProjections).length
