@@ -526,6 +526,7 @@
     // Secondary renders
     renderMovers();
     renderCutTracker();
+    renderPaymentStatus();
   }
 
   function renderOwnership() {
@@ -774,6 +775,41 @@
             ${inPool ? '<span class="cut-pool-tag">POOL</span>' : ''}
           </div>`;
         }).join('')}
+      </div>
+    `;
+  }
+
+  // ── PAYMENT STATUS ────────────────────────────────────────────────────────
+  function renderPaymentStatus() {
+    const section = document.getElementById('paymentStatus');
+    if (!section) return;
+
+    const entries = Object.values(rosters);
+    if (!entries.length) { section.style.display = 'none'; return; }
+
+    const paid   = entries.filter(r => r.paid).map(r => r.name);
+    const unpaid = entries.filter(r => !r.paid).map(r => r.name);
+
+    // Only show section if there's something interesting to show
+    if (!paid.length && !unpaid.length) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+
+    const paidHTML = paid.length
+      ? paid.map(n => `<span class="pay-chip pay-chip-good">${n}</span>`).join('')
+      : `<span class="pay-empty">Nobody yet… be the first hero.</span>`;
+
+    const shameHTML = unpaid.length
+      ? unpaid.map(n => `<span class="pay-chip pay-chip-bad">${n}</span>`).join('')
+      : `<span class="pay-empty">Everyone paid. Miracles do happen. 🙏</span>`;
+
+    section.innerHTML = `
+      <div class="pay-group pay-group-good">
+        <div class="pay-group-title">💸 Thanks for Paying</div>
+        <div class="pay-chips">${paidHTML}</div>
+      </div>
+      <div class="pay-group pay-group-bad">
+        <div class="pay-group-title">🫵 Ring of Shame</div>
+        <div class="pay-chips">${shameHTML}</div>
       </div>
     `;
   }
@@ -2270,6 +2306,45 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
   padding:1px 6px; border-radius:8px; letter-spacing:.05em;
 }
 
+/* ── PAYMENT STATUS ── */
+.payment-status {
+  margin-top:20px; border-radius:14px; overflow:hidden;
+  border:1px solid rgba(255,255,255,.08);
+}
+.pay-group {
+  padding:14px 18px;
+}
+.pay-group-good {
+  background:rgba(39,174,96,.08); border-bottom:1px solid rgba(255,255,255,.06);
+}
+.pay-group-bad {
+  background:rgba(192,57,43,.07);
+}
+.pay-group-title {
+  font-family:'DM Mono',monospace; font-size:.72rem; font-weight:600;
+  letter-spacing:.08em; text-transform:uppercase;
+  margin-bottom:10px;
+}
+.pay-group-good .pay-group-title { color:rgba(39,174,96,.9); }
+.pay-group-bad  .pay-group-title { color:rgba(220,80,60,.9); }
+.pay-chips { display:flex; flex-wrap:wrap; gap:7px; }
+.pay-chip {
+  font-family:'Source Serif 4',serif; font-size:.82rem; font-weight:600;
+  padding:4px 12px; border-radius:20px;
+}
+.pay-chip-good {
+  background:rgba(39,174,96,.18); color:rgba(120,220,150,.9);
+  border:1px solid rgba(39,174,96,.25);
+}
+.pay-chip-bad {
+  background:rgba(192,57,43,.15); color:rgba(230,120,100,.9);
+  border:1px solid rgba(192,57,43,.25);
+}
+.pay-empty {
+  font-family:'DM Mono',monospace; font-size:.78rem;
+  color:rgba(255,255,255,.3); font-style:italic;
+}
+
 /* ── HEATMAP MATRIX ── */
 .heatmap-card {
   background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08);
@@ -2484,6 +2559,9 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
       </div>
     </div>
   </div>
+
+  <!-- PAYMENT STATUS -->
+  <div id="paymentStatus" class="payment-status" style="display:none"></div>
 
   <!-- TABS -->
   <div class="tabs">
