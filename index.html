@@ -269,8 +269,9 @@
         const key = name.replace(/[.#$\/\[\]]/g, '_');
         newScores[key] = entry;
 
-        // Win probability for Win% column
-        if (typeof p.win === 'number') newProj[name] = p.win;
+        // Top-10 finish probability for Strength column (better signal than win prob)
+        const top10 = p.top_10 ?? p.top10;
+        if (typeof top10 === 'number') newProj[name] = top10;
       });
 
       if (Object.keys(newScores).length > 0) {
@@ -440,15 +441,25 @@
       const clickable = !hideRosters;
       const isMe = myName && e.name.toLowerCase() === myName.toLowerCase();
 
-      // Win probability — sum of top 5 players' win probs
-      const winProbs = e.picks ? e.picks.map(name => {
-        const key = name.replace(/[.#$\/\[\]]/g, '_');
-        return dgProjections[name] ?? dgProjections[key] ?? dgProjections[normalizeDgName(name)] ?? 0;
+      // Strength — sum of top 5 players' top-10 finish probability (DG live),
+      // falling back to implied odds probability when DG data isn't available.
+      function impliedOddsProb(oddsStr) {
+        if (!oddsStr) return 0;
+        const [n, d] = oddsStr.split('/').map(Number);
+        return isNaN(n) || isNaN(d) ? 0 : 1 / (n / d + 1);
+      }
+      const hasDgData = Object.keys(dgProjections).length > 0;
+      const strengthProbs = e.picks ? e.picks.map(name => {
+        if (hasDgData) {
+          const key = name.replace(/[.#$\/\[\]]/g, '_');
+          return dgProjections[name] ?? dgProjections[key] ?? dgProjections[normalizeDgName(name)] ?? 0;
+        } else {
+          return impliedOddsProb(FIELD.find(f => f.name === name)?.odds);
+        }
       }) : [];
-      const top5WinProb = [...winProbs].sort((a,b)=>b-a).slice(0,5).reduce((s,v)=>s+v,0);
-      const winProbDisplay = Object.keys(dgProjections).length
-        ? `${(top5WinProb*100).toFixed(1)}%`
-        : '—';
+      const top5Strength = [...strengthProbs].sort((a,b)=>b-a).slice(0,5).reduce((s,v)=>s+v,0);
+      const strengthLabel = hasDgData ? 'top10%' : 'odds';
+      const winProbDisplay = `${(top5Strength*100).toFixed(1)}% <span style="font-size:.6em;opacity:.5">${strengthLabel}</span>`;
 
       // Movement arrow
       let arrow = '';
@@ -2586,7 +2597,7 @@ footer { text-align:center; padding:20px; color:rgba(255,255,255,.22); font-size
         <span>Place</span>
         <span>Participant</span>
         <span style="text-align:right">Score</span>
-        <span style="text-align:right;font-size:.6rem">Strength</span>
+        <span style="text-align:right;font-size:.6rem" title="Sum of top 5 players' top-10 finish probability (live) or implied odds probability (pre-tourney)">Strength</span>
         <span style="text-align:right">Payout</span>
       </div>
       <div id="lbBody"><div class="lb-empty">Waiting for entries…</div></div>
